@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+httpx
+groq
+supabase
+pydantic
+python-dotenv

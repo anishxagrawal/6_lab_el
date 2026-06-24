@@ -1,0 +1,69 @@
+# Python
+venv/
+.venv/
+backend/venv/
+backend/.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Secrets
+*.pem
+*.key
+*.crt
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+.vercel/
+
+# Backend generated data
+backend/logs/
+backend/reports/
+backend/models/
+backend/data/
+backend/uploads/
+backend/tmp/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+*.err.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# TypeScript
+*.tsbuildinfo
