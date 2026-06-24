@@ -5,7 +5,6 @@ from typing import Any
 
 import httpx
 
-
 PATTERNS: dict[str, tuple[str, str]] = {
     "AWS Access Key": (r"AKIA[0-9A-Z]{16}", "HIGH"),
     "AWS Secret Key": (
@@ -97,6 +96,7 @@ async def scan_file(
     hash_secret,
     encrypt_snippet,
     calculate_exposure_score,
+    hmac_secret_key
 ) -> None:
 
     raw_url = (
@@ -149,7 +149,8 @@ async def scan_file(
                 secret_value = match.group(0)
 
                 secret_hash = hash_secret(
-                    secret_value
+                    secret_value,
+                    hmac_secret_key
                 )
 
                 plain_snippet = (

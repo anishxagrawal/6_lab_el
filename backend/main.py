@@ -73,16 +73,9 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 HMAC_SECRET_KEY = os.environ.get("HMAC_SECRET_KEY", "").strip()
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "").strip()
 
-# Initialize Fernet cipher (generate key if not provided)
 if not ENCRYPTION_KEY:
-    _cipher_suite = Fernet(Fernet.generate_key())
-    ENCRYPTION_KEY = _cipher_suite.key.decode("utf-8")
-else:
-    try:
-        _cipher_suite = Fernet(ENCRYPTION_KEY.encode("utf-8"))
-    except Exception:
-        _cipher_suite = Fernet(Fernet.generate_key())
-        ENCRYPTION_KEY = _cipher_suite.key.decode("utf-8")
+    raise RuntimeError("ENCRYPTION_KEY is required in .env")
+
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
@@ -108,6 +101,8 @@ ALLOWED_ORIGINS = [
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+
+cipher = build_cipher(ENCRYPTION_KEY)
 
 def debug_log(*args, **kwargs):
     """Print with automatic flush for logging"""
@@ -294,6 +289,8 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
             f"SEMGREP: Found {len(semgrep_result['records'])} findings"
         )
 
+        findings_raw: list[dict[str, Any]] = []   
+
     except Exception as exc:
 
         print(
@@ -306,8 +303,6 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
             "owasp_context": "",
             "total_findings": 0,
         }    
-
-        findings_raw: list[dict[str, Any]] = []
 
     try:
         async with httpx.AsyncClient(timeout=30, headers=headers) as http_client:
@@ -335,6 +330,11 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                     file_path=str(file_item.get("path") or ""),
                     repo_id=req.repo_id,
                     findings=findings_raw,
+                    get_first_commit_date=get_first_commit_date,
+                    hash_secret=hash_secret,
+                    encrypt_snippet=cipher.encrypt,
+                    calculate_exposure_score=calculate_exposure_score,
+                    hmac_secret_key=HMAC_SECRET_KEY
                 )
     except HTTPException:
         raise
@@ -384,20 +384,31 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         findings_for_reasoning.append(finding)
 
     print("AI: Generating AI reasoning...")
-    ai_reasoning = build_reasoning(owner, name, findings_for_reasoning)
+    ai_reasoning = build_reasoning(owner, name, findings_for_reasoning, groq_client)
     critical_findings = [finding for finding in unique_findings if str(finding.get("severity") or "").upper() == "CRITICAL"]
     print(f"ALERT: Critical findings: {len(critical_findings)}")
     
-    mail_sent, mail_error = _send_critical_mail(
-        client,
-        req.repo_id,
-        owner,
-        name,
-        github_url,
-        critical_findings,
-        ai_reasoning,
-        len(all_findings),
-    )
+    mail_sent, mail_error = send_critical_mail(
+                                client=client,
+                                repo_id=req.repo_id,
+                                owner=owner,
+                                name=name,
+                                repo_url=github_url,
+                                critical_findings=critical_findings,
+                                ai_reasoning=ai_reasoning,
+                                total_count=len(all_findings),
+                                smtp_host=SMTP_HOST,
+                                smtp_port=SMTP_PORT,
+                                smtp_user=SMTP_USER,
+                                smtp_password=SMTP_PASSWORD,
+                                smtp_use_ssl=SMTP_USE_SSL,
+                                smtp_use_tls=SMTP_USE_TLS,
+                                smtp_timeout=SMTP_TIMEOUT,
+                                alert_email_from=ALERT_EMAIL_FROM,
+                                alert_email_to=ALERT_EMAIL_TO,
+                                hmac_sha256_hex=hmac_sha256_hex,
+                                debug_log=debug_log,
+                            )
 
     try:
         client.table("repos").update(
@@ -429,7 +440,12 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         "github_url": github_url,
         "total": len(all_findings),
         "ai_reasoning": ai_reasoning,
-        "critical_alerts_enabled": _mail_alerts_enabled(),
+        "critical_alerts_enabled": mail_alerts_enabled(
+            SMTP_HOST,
+            SMTP_USER,
+            SMTP_PASSWORD,
+            ALERT_EMAIL_TO,
+        ),
         "critical_alert_email_sent": mail_sent,
         "critical_alert_error": mail_error,
         "critical_findings": len(critical_findings),
@@ -466,16 +482,18 @@ async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
     # Decrypt snippets on retrieval
     for finding in findings:
         if finding.get("snippet_enc"):
-            finding["snippet"] = _decrypt_snippet(finding["snippet_enc"])
+            finding["snippet"] = cipher.decrypt(finding["snippet_enc"])
         # Include exposure duration and score in response for older rows too.
         if finding.get("exposure_days") is None and finding.get("first_commit_date"):
             first_commit = datetime.fromisoformat(finding["first_commit_date"].replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
             exposure_days = max(0, (now - first_commit).days)
             finding["exposure_days"] = exposure_days
-            finding["exposure_score"] = _calculate_exposure_score(finding.get("severity", "LOW"), exposure_days)
-
-    findings = await _hydrate_missing_exposure_fields(client, str(repo.get("owner") or ""), str(repo.get("name") or ""), findings)
+            finding["exposure_score"] = calculate_exposure_score(
+                finding.get("severity", "LOW"),
+                exposure_days,
+            )
+    findings = await hydrate_missing_exposure_fields(client, str(repo.get("owner") or ""), str(repo.get("name") or ""), findings)
 
     return findings
 
