@@ -601,24 +601,26 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
 
     if unique_findings:
         print("DB: Saving findings to database...")
-        try:
-            client.table("findings").upsert(
-                all_findings,
-                on_conflict="repo_id,file_path,line_number,secret_hash",
-            ).execute()
-        except Exception as exc:
-            if "ai_suggested_fix" in str(exc):
-                print("WARNING: 'ai_suggested_fix' column is missing from the database schema.")
-                print("Falling back to upserting findings without 'ai_suggested_fix'.")
-                print("Please apply the migration at: supabase/migrations/20260711_add_findings_ai_suggested_fix.sql")
-                for finding in all_findings:
-                    finding.pop("ai_suggested_fix", None)
+        while True:
+            try:
                 client.table("findings").upsert(
                     all_findings,
                     on_conflict="repo_id,file_path,line_number,secret_hash",
                 ).execute()
-            else:
-                raise
+                break
+            except Exception as exc:
+                exc_str = str(exc)
+                if "column" in exc_str and "schema cache" in exc_str:
+                    import re
+                    match = re.search(r"Could not find the '([^']+)' column", exc_str)
+                    if match:
+                        missing_col = match.group(1)
+                        print(f"WARNING: '{missing_col}' column is missing from the database schema.")
+                        print(f"Please run the SQL migration script to update your Supabase schema.")
+                        for finding in all_findings:
+                            finding.pop(missing_col, None)
+                        continue
+                raise exc
         print("OK: Findings saved")
 
     findings_for_reasoning: list[dict[str, Any]] = []
