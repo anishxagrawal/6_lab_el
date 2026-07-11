@@ -57,6 +57,18 @@ class _FakeTable:
 class _FakeClient:
     def __init__(self, repos_table: _FakeTable):
         self._repos_table = repos_table
+        
+        class FakeAdmin:
+            def list_users(self):
+                return [SimpleNamespace(id="mock-user-uuid")]
+                
+        class FakeAuth:
+            def __init__(self):
+                self.admin = FakeAdmin()
+            def get_user(self, token):
+                return SimpleNamespace(user=SimpleNamespace(id="mock-user-uuid"))
+                
+        self.auth = FakeAuth()
 
     def table(self, name: str):
         if name == "repos":
@@ -106,6 +118,7 @@ def test_create_repo_inserts_new_row(monkeypatch):
     assert body["status"] == "pending"
     assert fake_table.insert_calls == [
         {
+            "user_id": "mock-user-uuid",
             "owner": "octocat",
             "name": "hello-world",
             "github_url": "https://github.com/octocat/hello-world",

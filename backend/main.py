@@ -303,8 +303,11 @@ async def create_repo(req: CreateRepoRequest, request: Request) -> dict[str, Any
         # 3. If still no user_id, get the first user from supabase auth admin list
         if not user_id:
             users_resp = client.auth.admin.list_users()
-            if users_resp and getattr(users_resp, "users", []):
-                user_id = users_resp.users[0].id
+            if users_resp:
+                if isinstance(users_resp, list):
+                    user_id = users_resp[0].id
+                elif getattr(users_resp, "users", []):
+                    user_id = users_resp.users[0].id
     except Exception as e:
         print(f"Error resolving user_id: {e}")
 
@@ -598,10 +601,24 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
 
     if unique_findings:
         print("DB: Saving findings to database...")
-        client.table("findings").upsert(
-            all_findings,
-            on_conflict="repo_id,file_path,line_number,secret_hash",
-        ).execute()
+        try:
+            client.table("findings").upsert(
+                all_findings,
+                on_conflict="repo_id,file_path,line_number,secret_hash",
+            ).execute()
+        except Exception as exc:
+            if "ai_suggested_fix" in str(exc):
+                print("WARNING: 'ai_suggested_fix' column is missing from the database schema.")
+                print("Falling back to upserting findings without 'ai_suggested_fix'.")
+                print("Please apply the migration at: supabase/migrations/20260711_add_findings_ai_suggested_fix.sql")
+                for finding in all_findings:
+                    finding.pop("ai_suggested_fix", None)
+                client.table("findings").upsert(
+                    all_findings,
+                    on_conflict="repo_id,file_path,line_number,secret_hash",
+                ).execute()
+            else:
+                raise
         print("OK: Findings saved")
 
     findings_for_reasoning: list[dict[str, Any]] = []
