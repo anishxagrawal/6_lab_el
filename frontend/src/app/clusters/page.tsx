@@ -1,166 +1,181 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { AlertTriangle, LoaderCircle } from "lucide-react";
-
-import { AppNavbar } from "@/components/app-navbar";
-import { formatRelativeTime } from "@/lib/github";
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
-
-type ClusterRow = {
-  id: string;
-  secret_hash: string;
-  secret_type: string;
-  repo_count: number;
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | string;
-  created_at: string;
-};
-
-function severityTone(severity: string) {
-  switch (severity) {
-    case "CRITICAL":
-      return "border-red-500/30 bg-red-500/15 text-red-100";
-    case "HIGH":
-      return "border-orange-500/30 bg-orange-500/15 text-orange-100";
-    case "MEDIUM":
-      return "border-yellow-500/30 bg-yellow-500/15 text-yellow-100";
-    default:
-      return "border-slate-500/30 bg-slate-500/15 text-slate-100";
-  }
-}
+import React, { useEffect, useState } from 'react';
+import { ShieldAlert, AlertTriangle, Key, Copy, Check } from 'lucide-react';
+import { api, Cluster } from '@/lib/api';
 
 export default function ClustersPage() {
-  const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [clusters, setClusters] = useState<ClusterRow[]>([]);
+  const [clusters, setClusters] = useState<Cluster[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isError, setIsError] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+  const fetchClusters = async () => {
+    try {
+      setIsLoading(true);
+      const data = await api.getClusters();
+      setClusters(data);
+      setIsError(false);
+    } catch (err) {
+      console.error(err);
+      setIsError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let active = true;
+    fetchClusters();
+  }, []);
 
-    async function bootstrap() {
-      if (!isSupabaseConfigured) {
-        setError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-        setLoading(false);
-        return;
-      }
+  const handleCopy = (hash: string, id: string) => {
+    navigator.clipboard.writeText(hash);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        setError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-        setLoading(false);
-        return;
-      }
-
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        router.replace("/login");
-        return;
-      }
-      const sessionToken = data.session.access_token;
-
-      const response = await fetch(`${apiUrl}/clusters`, {
-        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
-      });
-      if (!response.ok) {
-        setError("Unable to load clusters.");
-        setLoading(false);
-        return;
-      }
-
-      const payload = (await response.json()) as ClusterRow[];
-      if (active) {
-        setClusters(payload);
-        setLoading(false);
-      }
+  const getSeverityBadge = (severity: Cluster['severity']) => {
+    const sev = String(severity || 'MEDIUM').toUpperCase();
+    switch (sev) {
+      case 'CRITICAL':
+        return (
+          <span className="inline-flex items-center rounded border border-red-500/30 bg-red-950/20 px-2 py-0.5 text-xs font-bold text-red-400">
+            CRITICAL
+          </span>
+        );
+      case 'HIGH':
+        return (
+          <span className="inline-flex items-center rounded border border-orange-500/30 bg-orange-950/20 px-2 py-0.5 text-xs font-bold text-orange-400">
+            HIGH
+          </span>
+        );
+      case 'MEDIUM':
+        return (
+          <span className="inline-flex items-center rounded border border-yellow-500/30 bg-yellow-950/20 px-2 py-0.5 text-xs font-bold text-yellow-400">
+            MEDIUM
+          </span>
+        );
+      case 'LOW':
+      default:
+        return (
+          <span className="inline-flex items-center rounded border border-slate-500/30 bg-slate-950/20 px-2 py-0.5 text-xs font-bold text-slate-400">
+            LOW
+          </span>
+        );
     }
-
-    void bootstrap();
-    return () => {
-      active = false;
-    };
-  }, [apiUrl, router]);
-
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-slate-950 text-slate-50">
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="flex items-center gap-3 text-slate-300">
-            <LoaderCircle className="size-5 animate-spin" />
-            Loading clusters...
-          </div>
-        </div>
-      </main>
-    );
-  }
+  };
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(20,34,66,0.75),_rgba(5,10,18,1)_55%)] text-slate-50">
-      <AppNavbar />
-
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-black/15 backdrop-blur">
-          <h1 className="text-3xl font-semibold tracking-tight">Cross-repo clusters</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-            A cluster means the exact same secret key was found in multiple repos. Rotate it immediately.
-          </p>
-        </section>
-
-        {error ? (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100">
-            {error}
-          </div>
-        ) : null}
-
-        {!clusters.length ? (
-          <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-6 text-emerald-100">
-            <div className="flex items-center gap-3 font-semibold">
-              <AlertTriangle className="size-5" />
-              No cross-repo clusters yet.
-            </div>
-            <p className="mt-2 text-sm text-emerald-100/80">
-              When the same secret appears in more than one repo, it will show up here.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/75 shadow-lg shadow-black/10">
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="border-b border-white/10 bg-white/5 text-slate-300">
-                  <tr>
-                    <th className="px-5 py-4 font-medium">Secret Type</th>
-                    <th className="px-5 py-4 font-medium">Severity</th>
-                    <th className="px-5 py-4 font-medium">Repos Affected</th>
-                    <th className="px-5 py-4 font-medium">First Seen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {clusters.map((cluster) => (
-                    <tr
-                      key={cluster.id}
-                      className={`border-b border-white/5 last:border-b-0 ${
-                        cluster.repo_count >= 3 ? "bg-red-500/10" : ""
-                      }`}
-                    >
-                      <td className="px-5 py-4 font-medium text-slate-50">{cluster.secret_type}</td>
-                      <td className="px-5 py-4">
-                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${severityTone(cluster.severity)}`}>
-                          {cluster.severity}
-                        </span>
-                      </td>
-                      <td className="px-5 py-4 text-slate-200">{cluster.repo_count}</td>
-                      <td className="px-5 py-4 text-slate-300">{formatRelativeTime(cluster.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-3xl font-extrabold tracking-tight text-white">Cross-Repo Clusters</h1>
+        <p className="text-slate-400 mt-1">Detect and manage secrets that have been reused across multiple monitored repositories.</p>
       </div>
-    </main>
+
+      {/* Security Warning Banner */}
+      <div className="flex items-start gap-3 rounded-xl border border-yellow-500/20 bg-yellow-950/10 p-4">
+        <AlertTriangle className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
+        <div>
+          <h4 className="text-sm font-bold text-yellow-500">Credential Leak Alert</h4>
+          <p className="text-sm text-yellow-500/90 mt-1">
+            A cluster means the exact same secret key was found in multiple repositories. Rotate these keys immediately and avoid reuse across separate environments.
+          </p>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="flex h-64 flex-col items-center justify-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-800 border-t-accent-blue" />
+          <span className="text-sm font-medium text-slate-400">Loading clusters...</span>
+        </div>
+      ) : isError ? (
+        <div className="rounded-xl border border-red-500/20 bg-red-950/10 p-6 text-center text-red-400">
+          <p className="font-semibold">Failed to fetch clusters.</p>
+          <button 
+            onClick={fetchClusters}
+            className="mt-3 inline-flex items-center gap-1 text-sm font-medium underline hover:text-red-300"
+          >
+            Retry request
+          </button>
+        </div>
+      ) : clusters.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border-dark bg-panel/30 py-16 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 border border-border-dark text-slate-400">
+            <Key className="h-6 w-6" />
+          </div>
+          <h3 className="mt-4 text-lg font-bold text-white">No cross-repo clusters found</h3>
+          <p className="mx-auto mt-2 max-w-sm text-sm text-slate-400">
+            Cross-repo credential reuse is evaluated once 2 or more monitored repositories are successfully scanned and found to share identical secret values.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border-dark bg-panel shadow-lg">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-border-dark bg-panel/50 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <th className="py-4 px-6">Secret Type</th>
+                <th className="py-4 px-6">Severity</th>
+                <th className="py-4 px-6">Repos Affected</th>
+                <th className="py-4 px-6">Secret Hash</th>
+                <th className="py-4 px-6">First Detected</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border-dark/60 text-sm text-slate-300">
+              {clusters.map((cluster) => {
+                const isCriticalOverlap = cluster.repo_count >= 3;
+                return (
+                  <tr 
+                    key={cluster.id} 
+                    className={`transition-colors hover:bg-slate-800/30 ${
+                      isCriticalOverlap ? 'bg-red-950/15 text-red-100 hover:bg-red-950/25' : ''
+                    }`}
+                  >
+                    <td className="py-4 px-6 font-semibold flex items-center gap-2">
+                      <ShieldAlert className={`h-4 w-4 ${isCriticalOverlap ? 'text-red-400' : 'text-slate-400'}`} />
+                      {cluster.secret_type}
+                    </td>
+                    <td className="py-4 px-6">{getSeverityBadge(cluster.severity)}</td>
+                    <td className="py-4 px-6">
+                      <span className={`font-mono text-sm font-bold ${
+                        isCriticalOverlap ? 'text-red-400' : 'text-white'
+                      }`}>
+                        {cluster.repo_count} {cluster.repo_count === 1 ? 'repo' : 'repos'}
+                      </span>
+                    </td>
+                    <td className="py-4 px-6">
+                      <div className="flex items-center gap-2 font-mono text-xs">
+                        <span className="text-slate-400 select-all shrink-0">
+                          {cluster.secret_hash.substring(0, 16)}...
+                        </span>
+                        <button
+                          onClick={() => handleCopy(cluster.secret_hash, cluster.id)}
+                          className="text-slate-500 hover:text-white transition-colors"
+                          title="Copy Full Hash"
+                        >
+                          {copiedId === cluster.id ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="py-4 px-6 text-slate-400 text-xs">
+                      {new Date(cluster.created_at).toLocaleDateString(undefined, {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

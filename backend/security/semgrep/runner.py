@@ -4,7 +4,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .constants import SEMGREP_CONFIG
+from .constants import CUSTOM_RULE_PATHS, SEMGREP_CONFIG
+
+SEMGREP_TIMEOUT_SECONDS = 120
 
 
 class SemgrepExecutionError(Exception):
@@ -68,11 +70,32 @@ def _find_semgrep_executable() -> str:
     )
 
 
+def _resolve_custom_configs() -> list[str]:
+    """
+    Return the custom rule-pack paths that currently exist on disk.
+
+    Missing/renamed files are skipped rather than raised, so a fresh
+    clone that hasn't pulled the rules/ folder yet doesn't crash the
+    scan endpoint.
+    """
+
+    return [
+        str(path)
+        for path in CUSTOM_RULE_PATHS
+        if Path(path).exists()
+    ]
+
+
 def run_semgrep(
     repo_path: str,
 ) -> dict:
     """
     Execute Semgrep scan.
+
+    Merges the registry-based SEMGREP_CONFIG ("auto" by default) with
+    any local custom rule packs (e.g. rules/crypto_misuse.yml), each
+    passed as its own --config flag so Semgrep runs both rule sets in
+    a single invocation.
 
     Returns:
         Raw Semgrep JSON output.
@@ -87,17 +110,30 @@ def run_semgrep(
         "scan",
         "--config",
         SEMGREP_CONFIG,
+    ]
+
+    for custom_config in _resolve_custom_configs():
+        command += ["--config", custom_config]
+
+    command += [
         "--json",
         repo_path,
     ]
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=SEMGREP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SemgrepExecutionError(
+            f"Semgrep scan exceeded the {SEMGREP_TIMEOUT_SECONDS}s time limit "
+            f"for {repo_path}."
+        ) from exc
 
     if result.returncode not in [0, 1]:
         raise SemgrepExecutionError(

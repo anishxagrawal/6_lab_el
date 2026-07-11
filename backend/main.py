@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
-import re
-import smtplib
 import sys
-from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import math
 
 from ai.reasoning import build_reasoning
+from ai.remediation import suggest_fix
 
 from alerts.email_alerts import (
     mail_alerts_enabled,
@@ -31,9 +26,19 @@ from core.exposure import (
     hydrate_missing_exposure_fields,
 )
 
+from core.keys import load_or_create_keypair
+
+from security.report_signing import (
+    public_key_to_pem,
+    sign_report,
+    verify_report,
+)
+
 from security.github_clone import (
     clone_repository,
     cleanup_repository,
+    parse_github_url,
+    InvalidRepositoryUrlError,
 )
 
 from security.secret_scanner import (
@@ -41,10 +46,11 @@ from security.secret_scanner import (
     should_skip_file,
 )
 
+from security.git_history_scanner import GitHistoryScanError, scan_git_history
 from security.semgrep.service import SemgrepService
+from security.trivy.service import TrivyService
 
 import httpx
-from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,8 +58,6 @@ from groq import Groq
 from pydantic import BaseModel
 from supabase import Client, create_client
 from supabase.lib.client_options import SyncClientOptions
-
-from security.semgrep.service import SemgrepService
 
 import tempfile
 import subprocess
@@ -104,6 +108,12 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 cipher = build_cipher(ENCRYPTION_KEY)
 
+# Phase 7: RSA keypair used only to sign/verify scan report payloads
+# (see security/report_signing.py). Generated once on first run and
+# reused thereafter -- backend/.keys/ is gitignored.
+SIGNING_PRIVATE_KEY, SIGNING_PUBLIC_KEY = load_or_create_keypair()
+
+
 def debug_log(*args, **kwargs):
     """Print with automatic flush for logging"""
     print(*args, **kwargs, file=sys.stderr, flush=True)
@@ -120,41 +130,24 @@ app.add_middleware(
 )
 
 
-PATTERNS: dict[str, tuple[str, str]] = {
-    "AWS Access Key": (r"AKIA[0-9A-Z]{16}", "HIGH"),
-    "AWS Secret Key": (r"(?i)aws.{0,20}secret.{0,20}[\'\"][0-9a-zA-Z/+=]{40}[\'\"]", "CRITICAL"),
-    "OpenAI Key": (r"sk-[a-zA-Z0-9]{32,}", "HIGH"),
-    "Anthropic Key": (r"sk-ant-[a-zA-Z0-9\-]{90,}", "HIGH"),
-    "Groq Key": (r"gsk_[a-zA-Z0-9]{50,}", "HIGH"),
-    "GitHub Token": (r"gh[pousr]_[A-Za-z0-9_]{36,}", "HIGH"),
-    "Stripe Secret": (r"sk_live_[0-9a-zA-Z]{24,}", "CRITICAL"),
-    "Google API Key": (r"AIza[0-9A-Za-z\-_]{35}", "HIGH"),
-    "Slack Token": (r"xox[baprs]-[0-9a-zA-Z\-]{10,}", "MEDIUM"),
-    "Private Key": (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "CRITICAL"),
-    "Generic Password": (r"(?i)(password|passwd|pwd)\s*[:=]\s*[\"']?[^\s\"']{8,}[\"']?", "MEDIUM"),
-    "Generic Secret": (r"(?i)(secret|api_key|api_secret|access_token)\s*[:=]\s*[\"']?[^\s\"']{8,}[\"']?", "MEDIUM"),
-}
-
-SKIP_EXT = {
-    ".png",
-    ".jpg",
-    ".gif",
-    ".svg",
-    ".ico",
-    ".woff",
-    ".ttf",
-    ".zip",
-    ".pdf",
-    ".lock",
-    ".min.js",
-    ".map",
-    ".exe",
-    ".bin",
-}
+# NOTE: the secret-detection PATTERNS and SKIP_EXT tables live in
+# security/secret_scanner.py (imported above via `scan_file` / `should_skip_file`).
+# They are intentionally not duplicated here — a previous copy of both dicts
+# existed in this file and had drifted out of sync with the real ones; it was
+# removed as part of Phase 0 cleanup.
 
 
 class ScanRequest(BaseModel):
     repo_id: str
+
+
+class CreateRepoRequest(BaseModel):
+    github_url: str
+
+
+class VerifyReportRequest(BaseModel):
+    report: dict[str, Any]
+    signature: str
 
 
 def _now_iso() -> str:
@@ -243,12 +236,133 @@ def _aggregate_clusters(client: Client) -> list[dict[str, Any]]:
     result.sort(key=lambda item: (item.get("repo_count", 0), item.get("created_at") or ""), reverse=True)
     return result
 
-@app.get("/health")
+@app.get("/health", summary="Liveness check")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/scan")
+@app.post(
+    "/repos",
+    summary="Register a GitHub repo for scanning (idempotent)",
+)
+async def create_repo(req: CreateRepoRequest, request: Request) -> dict[str, Any]:
+    """
+    Registers a repo by its GitHub URL so it has a `repo_id` that
+    POST /scan can then be called with. This is the missing first step in
+    the lifecycle: every other endpoint (`/scan`, `/findings/{id}`,
+    `/repos/{id}/score`, `DELETE /repos/{id}`) assumes a `repos` row
+    already exists.
+
+    Validates `github_url` against the same allowlist used before cloning
+    (security.github_clone.parse_github_url), so a malformed/unsafe URL is
+    rejected here rather than surfacing later as a confusing clone failure.
+
+    Idempotent: if this github_url is already registered, returns the
+    existing row instead of creating a duplicate (safe to call twice, e.g.
+    from a "track this repo" button that gets double-clicked).
+    """
+    client = _supabase_for_request(request)
+
+    try:
+        owner, name = parse_github_url(req.github_url)
+    except InvalidRepositoryUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    normalized_url = f"https://github.com/{owner}/{name}"
+
+    existing = (
+        client.table("repos")
+        .select("*")
+        .eq("github_url", normalized_url)
+        .limit(1)
+        .execute()
+    )
+    existing_rows = getattr(existing, "data", []) or []
+    if existing_rows:
+        return {"created": False, **existing_rows[0]}
+
+    # Find a valid user_id to associate with the repo (required by DB schema constraint)
+    user_id = None
+    try:
+        # 1. Check if we can extract user_id from the authorization token
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", maxsplit=1)[1].strip()
+            if token:
+                user_res = client.auth.get_user(token)
+                if user_res and user_res.user:
+                    user_id = user_res.user.id
+        
+        # 2. Try to get any existing user_id from repos table
+        if not user_id:
+            existing_repos = client.table("repos").select("user_id").limit(1).execute()
+            existing_rows_data = getattr(existing_repos, "data", []) or []
+            if existing_rows_data:
+                user_id = existing_rows_data[0].get("user_id")
+                
+        # 3. If still no user_id, get the first user from supabase auth admin list
+        if not user_id:
+            users_resp = client.auth.admin.list_users()
+            if users_resp and getattr(users_resp, "users", []):
+                user_id = users_resp.users[0].id
+    except Exception as e:
+        print(f"Error resolving user_id: {e}")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No registered users found in Supabase Auth. Please add at least one user in your Supabase Auth dashboard first."
+        )
+
+    inserted = (
+        client.table("repos")
+        .insert(
+            {
+                "user_id": user_id,
+                "owner": owner,
+                "name": name,
+                "github_url": normalized_url,
+                "status": "pending",
+                "finding_count": 0,
+            }
+        )
+        .execute()
+    )
+    inserted_rows = getattr(inserted, "data", []) or []
+    if not inserted_rows:
+        raise HTTPException(status_code=500, detail="Failed to create repo")
+
+    return {"created": True, **inserted_rows[0]}
+
+
+@app.get(
+    "/repos",
+    summary="List all registered repos",
+)
+async def list_repos(request: Request) -> list[dict[str, Any]]:
+    """
+    Returns every row in the repos table, most recently created first.
+
+    Added alongside the frontend build-out: POST /repos registers repos
+    one at a time but there was previously no way to enumerate what's
+    already been registered, which a repo-list/dashboard view needs.
+    """
+    client = _supabase_for_request(request)
+
+    response = (
+        client.table("repos")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return getattr(response, "data", []) or []
+
+
+@app.post(
+    "/scan",
+    summary="Clone, scan, score, sign, and store a full security report for a repo",
+)
 async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
     print(f"\nSCAN: Starting scan for repo ID: {req.repo_id}")
     client = _supabase_for_request(request)
@@ -271,7 +385,8 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
 
     try:
         cloned_repo_path = clone_repository(
-            github_url
+            github_url,
+            full_history=True,
         )
 
         print(
@@ -303,6 +418,38 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
             "owasp_context": "",
             "total_findings": 0,
         }    
+
+    # Trivy dependency (SCA) scan (Phase 10): fills OWASP A06:2021
+    # (Vulnerable and Outdated Components), the one category none of the
+    # other engines (secret scanner, Semgrep) cover. Reuses the same
+    # clone as Semgrep above rather than cloning again. Non-fatal for
+    # two distinct reasons, both logged differently so they're easy to
+    # tell apart: (1) trivy isn't installed at all - TrivyService just
+    # returns zero findings via runner.py's graceful fallback, no
+    # exception; (2) trivy is installed but the scan itself fails
+    # (timeout, DB fetch failure, corrupted repo) - caught here so a
+    # SCA hiccup never fails the whole /scan request, same philosophy
+    # as the git-history scan below.
+    trivy_service = TrivyService()
+    trivy_result = {
+        "records": [],
+        "total_findings": 0,
+    }
+
+    if cloned_repo_path:
+        try:
+            trivy_result = trivy_service.analyze_and_convert(
+                repo_id=req.repo_id,
+                repo_path=cloned_repo_path,
+            )
+
+            print(
+                f"TRIVY: Found {trivy_result['total_findings']} "
+                f"dependency vulnerabilit(y/ies)"
+            )
+
+        except Exception as exc:
+            print(f"WARNING: Trivy scan failed: {exc}")
 
     try:
         async with httpx.AsyncClient(timeout=30, headers=headers) as http_client:
@@ -350,9 +497,49 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         if key in seen:
             continue
         seen.add(key)
+        finding.setdefault("found_in", "current")
         unique_findings.append(finding)
 
     print(f"OK: Found {len(unique_findings)} unique secrets")
+
+    # Git history scan (Phase 3): catches secrets that were committed and
+    # later removed from the current tree, which the current-HEAD scan
+    # above can't see. Non-fatal - a failure here (timeout, huge history,
+    # corrupted repo) should not fail the whole /scan request, since the
+    # current-HEAD findings and Semgrep results are still valid on their own.
+    history_findings: list[dict[str, Any]] = []
+    if cloned_repo_path:
+        try:
+            current_secret_keys = {
+                (f["file_path"], f["secret_hash"]) for f in unique_findings
+            }
+
+            raw_history_findings = scan_git_history(
+                repo_path=cloned_repo_path,
+                repo_id=req.repo_id,
+                hash_secret=hash_secret,
+                encrypt_snippet=cipher.encrypt,
+                hmac_secret_key=HMAC_SECRET_KEY,
+            )
+
+            # Skip anything already reported as a live, current-HEAD finding -
+            # the history copy is redundant once the secret is already flagged
+            # as still-present-today.
+            history_findings = [
+                hf
+                for hf in raw_history_findings
+                if (hf["file_path"], hf["secret_hash"]) not in current_secret_keys
+            ]
+
+            print(
+                f"HISTORY: Found {len(history_findings)} secret(s) only in git "
+                f"history (not present in current HEAD)"
+            )
+
+        except GitHistoryScanError as exc:
+            print(f"WARNING: Git history scan failed: {exc}")
+
+    unique_findings.extend(history_findings)
 
     semgrep_findings = (
         semgrep_result["records"]
@@ -362,10 +549,49 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         f"SEMGREP: {len(semgrep_findings)} findings"
     )
 
+    trivy_findings = (
+        trivy_result["records"]
+    )
+
+    print(
+        f"TRIVY: {len(trivy_findings)} findings"
+    )
+
     all_findings = (
         unique_findings
         + semgrep_findings
+        + trivy_findings
     )
+
+    # AI-powered remediation suggestions (Phase 6): bounded to the top 10
+    # CRITICAL/HIGH Semgrep findings only. Deliberately excludes raw
+    # secret-scanner findings - see the docstring in ai/remediation.py for
+    # why (their snippet can contain a live secret value; the fix for a
+    # leaked secret is always "rotate it," not something an AI call adds
+    # value to). Capped at 10 to bound Groq API cost/latency per scan -
+    # these are sequential blocking calls, same style as build_reasoning
+    # below; parallelizing with asyncio.gather is a reasonable future
+    # optimization but not required for a lab-scale demo.
+    #
+    # Also deliberately excludes Trivy findings (Phase 10): their
+    # `recommendation` field already names the exact fixed version
+    # ("upgrade requests to 2.6.1"), which is more precise than
+    # anything an LLM would add - there's no ambiguity for AI to
+    # resolve here, unlike a code snippet that needs interpretation.
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    remediation_candidates = sorted(
+        (
+            finding
+            for finding in semgrep_findings
+            if str(finding.get("severity") or "").upper() in ("CRITICAL", "HIGH")
+        ),
+        key=lambda finding: severity_rank.get(str(finding.get("severity") or "").upper(), 4),
+    )[:10]
+
+    if remediation_candidates:
+        print(f"AI: Generating remediation suggestions for {len(remediation_candidates)} finding(s)...")
+        for finding in remediation_candidates:
+            finding["ai_suggested_fix"] = suggest_fix(finding, groq_client)
 
     for finding in unique_findings:
         finding["cluster_id"] = None
@@ -387,7 +613,39 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
     ai_reasoning = build_reasoning(owner, name, findings_for_reasoning, groq_client)
     critical_findings = [finding for finding in unique_findings if str(finding.get("severity") or "").upper() == "CRITICAL"]
     print(f"ALERT: Critical findings: {len(critical_findings)}")
-    
+
+    # Phase 7: sign a small summary payload of this scan so its integrity
+    # can be independently verified later (e.g. before trusting a report
+    # handed off outside the system). Deliberately a summary, not the full
+    # findings list, to keep the signed payload small and stable - the
+    # canonical bytes must match exactly on verify, so anything huge/volatile
+    # (like full snippet text) is a poor fit here.
+    report_payload: dict[str, Any] = {
+        "repo_id": req.repo_id,
+        "owner": owner,
+        "name": name,
+        "github_url": github_url,
+        "total_findings": len(all_findings),
+        "critical_findings": len(critical_findings),
+        "generated_at": _now_iso(),
+    }
+    report_signature = sign_report(report_payload, SIGNING_PRIVATE_KEY)
+
+    try:
+        client.table("scan_reports").insert(
+            {
+                "repo_id": req.repo_id,
+                "report_payload": report_payload,
+                "signature": report_signature,
+            }
+        ).execute()
+    except Exception as exc:
+        # Non-fatal: a failure to persist the signed report (e.g. the
+        # scan_reports table doesn't exist yet on an older DB) shouldn't
+        # fail the whole /scan request - the signature is still returned
+        # in the response below so the caller can verify it themselves.
+        print(f"WARNING: Failed to store signed scan report: {exc}")
+
     mail_sent, mail_error = send_critical_mail(
                                 client=client,
                                 repo_id=req.repo_id,
@@ -417,6 +675,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                 "last_scanned_at": _now_iso(),
                 "finding_count": len(all_findings),
                 "ai_reasoning": ai_reasoning,
+                "report_signature": report_signature,
             }
         ).eq("id", req.repo_id).execute()
     except Exception as exc:
@@ -449,10 +708,16 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         "critical_alert_email_sent": mail_sent,
         "critical_alert_error": mail_error,
         "critical_findings": len(critical_findings),
+        "report_payload": report_payload,
+        "report_signature": report_signature,
+        # Phase 8: this was already computed by SemgrepService (RAG-retrieved
+        # OWASP guidance for whatever categories were found) but previously
+        # discarded here rather than surfaced to the caller.
+        "owasp_context": semgrep_result.get("owasp_context", ""),
     }
 
 
-@app.delete("/repos/{repo_id}")
+@app.delete("/repos/{repo_id}", summary="Delete a repo and all of its findings")
 async def delete_repo(repo_id: str, request: Request) -> dict[str, Any]:
     client = _supabase_for_request(request)
     repo = _safe_repo_lookup(client, repo_id)
@@ -466,7 +731,7 @@ async def delete_repo(repo_id: str, request: Request) -> dict[str, Any]:
     }
 
 
-@app.get("/findings/{repo_id}")
+@app.get("/findings/{repo_id}", summary="List all findings for a scanned repo")
 async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
     client = _supabase_for_request(request)
     repo = _safe_repo_lookup(client, repo_id)
@@ -498,7 +763,83 @@ async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
     return findings
 
 
-@app.get("/clusters")
+@app.get(
+    "/repos/{repo_id}/score",
+    summary="Compute a repo's current security score (0-100) from its findings",
+)
+async def get_security_score(repo_id: str, request: Request) -> dict[str, Any]:
+    """
+    Reuses the exact scoring formula already implemented in
+    SemgrepService.calculate_security_score (100, minus 15/8/4/2 per
+    CRITICAL/HIGH/MEDIUM/LOW finding, floored at 0). The arithmetic is
+    duplicated here rather than reconstructing a full SemgrepAnalysisResult
+    object from stored findings, since that object expects the raw Semgrep
+    finding list rather than DB rows - duplicating three lines of arithmetic
+    is simpler than reverse-engineering one.
+    """
+    client = _supabase_for_request(request)
+    _safe_repo_lookup(client, repo_id)  # 404s if the repo doesn't exist
+
+    response = (
+        client.table("findings")
+        .select("severity")
+        .eq("repo_id", repo_id)
+        .execute()
+    )
+    findings = getattr(response, "data", []) or []
+
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for finding in findings:
+        severity = str(finding.get("severity") or "LOW").upper()
+        if severity in counts:
+            counts[severity] += 1
+
+    score = max(
+        100
+        - counts["CRITICAL"] * 15
+        - counts["HIGH"] * 8
+        - counts["MEDIUM"] * 4
+        - counts["LOW"] * 2,
+        0,
+    )
+
+    return {
+        "repo_id": repo_id,
+        "security_score": score,
+        "breakdown": counts,
+    }
+
+
+@app.get("/clusters", summary="Cross-repo secret clusters (same secret reused across repos)")
 async def get_clusters(request: Request) -> list[dict[str, Any]]:
     client = _supabase_for_request(request)
     return _aggregate_clusters(client)
+
+
+@app.post(
+    "/reports/verify",
+    summary="Verify a signed scan report against DarkShield's public key",
+)
+async def verify_report_endpoint(req: VerifyReportRequest) -> dict[str, Any]:
+    """
+    Independently verifies that `req.report` (the exact payload originally
+    returned as `report_payload` from /scan) matches `req.signature`
+    (the corresponding `report_signature`) under DarkShield's report-signing
+    key. Any mutation to the report - even a single character - flips this
+    to `valid: False`.
+    """
+    is_valid = verify_report(req.report, req.signature, SIGNING_PUBLIC_KEY)
+    return {"valid": is_valid}
+
+
+@app.get(
+    "/reports/public-key",
+    summary="Fetch DarkShield's report-signing public key (PEM)",
+)
+async def get_public_key() -> dict[str, str]:
+    """
+    Exposes the public half of the report-signing keypair so a signature
+    can be verified independently of this API (e.g. offline, with any
+    standard RSA-PSS/SHA-256 verification tool), not just via /reports/verify.
+    """
+    return {"public_key_pem": public_key_to_pem(SIGNING_PUBLIC_KEY)}

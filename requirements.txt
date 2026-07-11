@@ -1,0 +1,7 @@
+-r backend/requirements.txt
+
+# Frontend requirements & execution:
+# - Node.js >= 18.0.0
+# - npm (usually packaged with Node.js)
+# To run the frontend:
+#   cd frontend && npm install && npm run dev

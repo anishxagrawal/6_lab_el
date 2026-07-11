@@ -35,7 +35,7 @@ def semgrep_to_finding_record(
         "cluster_id": None,
 
         # New fields
-        "source": "semgrep",
+        "source_type": "semgrep",
 
         "rule_id": finding.rule_id,
 

@@ -108,6 +108,7 @@ create table public.findings (
   matched_value        text,
   target_domain_match  boolean not null default false,
   is_reviewed          boolean not null default false,
+  ai_suggested_fix     text,
   created_at           timestamptz not null default now(),
   unique (repo_id, file_path, line_number, secret_hash)
 );

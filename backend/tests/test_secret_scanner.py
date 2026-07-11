@@ -69,11 +69,6 @@ SKIP_EXT = {
     ".exe",
     ".bin",
 }
-# NOTE: .js/.jsx/.ts/.tsx/.html/.vue are intentionally NOT in this set.
-# The Phase 5 frontend_rules.yml Semgrep pack (XSS, insecure storage,
-# missing rel=noopener, etc.) depends on these files reaching the scanner.
-# Do not add them here without updating security/semgrep/rules/frontend_rules.yml
-# accordingly.
 
 
 def should_skip_file(

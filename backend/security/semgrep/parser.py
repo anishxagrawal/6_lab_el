@@ -63,6 +63,14 @@ def build_recommendation(
 ) -> str:
     """
     Generic recommendation generator.
+
+    This is the static, always-present fallback shown for every finding.
+    Phase 6 (ai/remediation.py) additionally attaches a per-finding,
+    AI-generated `ai_suggested_fix` to a bounded top-10 subset of
+    CRITICAL/HIGH Semgrep findings; when present it's the more specific
+    suggestion to show, with this generic `recommendation` remaining as
+    the fallback for every other finding (or if the Groq call fails/isn't
+    configured).
     """
 
     recommendations = {

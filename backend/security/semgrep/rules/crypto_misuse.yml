@@ -1,0 +1,163 @@
+rules:
+  - id: weak-hash-md5-sha1
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Use of a cryptographically broken hash algorithm (MD5/SHA1). These are
+      vulnerable to collision attacks and must not be used for passwords,
+      signatures, or any security-sensitive purpose. Use bcrypt/argon2 for
+      passwords, or SHA-256/SHA-3 for general integrity checks.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      references:
+        - https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+
+  - id: hardcoded-iv
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A static/hardcoded initialization vector (IV) is used for a block
+      cipher. Reusing a fixed IV across encryptions leaks information about
+      the plaintext and breaks semantic security (e.g. CBC mode). Generate a
+      fresh random IV per encryption with os.urandom()/secrets.token_bytes().
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-329: Generation of Predictable IV with CBC Mode"
+    patterns:
+      - pattern-either:
+          - pattern: AES.new($KEY, $MODE, "...")
+          - pattern: AES.new($KEY, $MODE, b"...")
+
+  - id: weak-rsa-key-size
+    languages: [python]
+    severity: ERROR
+    message: >-
+      RSA key size is below the 2048-bit minimum recommended by NIST/OWASP.
+      Keys smaller than 2048 bits can be feasibly factored and provide
+      inadequate security margins. Use key_size=4096 (or at minimum 2048).
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-326: Inadequate Encryption Strength"
+    patterns:
+      - pattern: rsa.generate_private_key(..., key_size=$SIZE, ...)
+      - metavariable-comparison:
+          metavariable: $SIZE
+          comparison: int($SIZE) < 2048
+
+  - id: insecure-cipher-mode-ecb
+    languages: [python]
+    severity: ERROR
+    message: >-
+      AES is being used in ECB mode. ECB encrypts identical plaintext blocks
+      into identical ciphertext blocks, leaking structural information about
+      the data (the classic "ECB penguin" problem). Use an authenticated
+      mode such as GCM instead.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+    patterns:
+      - pattern-either:
+          - pattern: AES.new($KEY, AES.MODE_ECB)
+          - pattern: Cipher(algorithms.AES($KEY), modes.ECB())
+
+  - id: insecure-random-for-security
+    languages: [python]
+    severity: WARNING
+    message: >-
+      The 'random' module is not cryptographically secure and must not be
+      used to generate tokens, session IDs, passwords, or other security
+      sensitive values, since its output is predictable. Use the 'secrets'
+      module instead (e.g. secrets.token_hex()/secrets.choice()).
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+    patterns:
+      - pattern-either:
+          - pattern: random.choice(...)
+          - pattern: random.randint(...)
+      - pattern-inside: |
+          def $FUNC(...):
+            ...
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: (?i).*(token|secret|password|session|key|otp|auth).*
+
+  # ---------------------------------------------------------------------
+  # JavaScript / TypeScript equivalents
+  # ---------------------------------------------------------------------
+
+  - id: weak-hash-md5-sha1-js
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Use of a cryptographically broken hash algorithm (MD5/SHA1) via
+      crypto.createHash(). These are vulnerable to collision attacks. Use
+      bcrypt/argon2 for passwords, or sha256/sha3-256 for integrity checks.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash('md5')
+          - pattern: crypto.createHash("sha1")
+          - pattern: crypto.createHash('sha1')
+
+  - id: insecure-cipher-mode-ecb-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      AES is being used in ECB mode via crypto.createCipheriv(). ECB leaks
+      structural information about the plaintext. Use an authenticated mode
+      such as aes-256-gcm instead.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createCipheriv("aes-128-ecb", $KEY, $IV)
+          - pattern: crypto.createCipheriv('aes-128-ecb', $KEY, $IV)
+          - pattern: crypto.createCipheriv("aes-256-ecb", $KEY, $IV)
+          - pattern: crypto.createCipheriv('aes-256-ecb', $KEY, $IV)
+
+  - id: weak-rsa-key-size-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      RSA modulusLength is below the 2048-bit minimum recommended by
+      NIST/OWASP. Use modulusLength 4096 (or at minimum 2048).
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-326: Inadequate Encryption Strength"
+    patterns:
+      - pattern: 'crypto.generateKeyPairSync("rsa", { modulusLength: $SIZE })'
+      - metavariable-comparison:
+          metavariable: $SIZE
+          comparison: $SIZE < 2048
+
+  - id: insecure-random-for-security-js
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Math.random() is not cryptographically secure and must not be used to
+      generate tokens, session IDs, or other security sensitive values,
+      since its output is predictable. Use crypto.randomBytes() instead.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+    patterns:
+      - pattern: Math.random()

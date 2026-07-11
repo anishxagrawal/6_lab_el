@@ -1,0 +1,80 @@
+rules:
+  - id: frontend-dom-xss-innerhtml
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Assigning to innerHTML (or calling document.write) with non-constant
+      data can lead to DOM-based XSS. Use textContent, or sanitize the value
+      with a library such as DOMPurify before inserting it as HTML.
+    metadata:
+      category: security
+      owasp: A03:2021
+      cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation"
+      references:
+        - https://owasp.org/Top10/A03_2021-Injection/
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $DATA
+          - pattern: document.write($DATA)
+
+  - id: frontend-react-dangerously-set-innerhtml
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      dangerouslySetInnerHTML bypasses React's built-in XSS protection by
+      rendering raw HTML. Sanitize the value with DOMPurify (or an
+      equivalent) before passing it to __html.
+    metadata:
+      category: security
+      owasp: A03:2021
+      cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation"
+    pattern: '<$TAG dangerouslySetInnerHTML={{__html: $X}} />'
+
+  - id: frontend-insecure-storage-of-token
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A sensitive-looking value (token/auth/password/secret/apiKey) is being
+      written to localStorage/sessionStorage, which is readable by any
+      script on the page and is exfiltrable via XSS. Prefer an httpOnly
+      cookie for tokens and session credentials.
+    metadata:
+      category: security
+      owasp: A02:2021
+      cwe: "CWE-922: Insecure Storage of Sensitive Information"
+    pattern-regex: "(localStorage|sessionStorage)\\.setItem\\(\\s*[\"']((token|auth|authToken|password|secret|apiKey|api_key))[\"']"
+
+  - id: frontend-cors-wildcard-with-credentials
+    languages: [python]
+    severity: ERROR
+    message: >-
+      CORS is configured with a wildcard origin ("*") combined with
+      allow_credentials=True. Browsers reject this combination for
+      credentialed requests in practice, but some clients/proxies don't
+      enforce it strictly -- treat it as a serious misconfiguration and use
+      an explicit origin allowlist instead of "*" whenever credentials are
+      allowed.
+    metadata:
+      category: security
+      owasp: A05:2021
+      cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+    patterns:
+      - pattern-either:
+          - pattern: $APP.add_middleware(CORSMiddleware, ..., allow_origins=["*"], ..., allow_credentials=True, ...)
+          - pattern: $APP.add_middleware(CORSMiddleware, ..., allow_credentials=True, ..., allow_origins=["*"], ...)
+
+  - id: frontend-target-blank-missing-noopener
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      An <a> tag uses target="_blank" without rel="noopener noreferrer".
+      The opened page gets a window.opener reference back to the origin
+      tab, which it can use to redirect it (reverse tabnabbing). Add
+      rel="noopener noreferrer".
+    metadata:
+      category: security
+      owasp: A05:2021
+      cwe: "CWE-1022: Use of Web Link to Untrusted Target with window.opener Access"
+    patterns:
+      - pattern-regex: "<a\\s+[^>]*target=[\"']_blank[\"'][^>]*>"
+      - pattern-not-regex: "<a\\s+[^>]*target=[\"']_blank[\"'][^>]*rel=[\"'][^\"']*noopener[^\"']*[\"'][^>]*>"

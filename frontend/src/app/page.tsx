@@ -1,424 +1,397 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { 
+  Plus, 
+  GitFork, 
+  ExternalLink, 
+  AlertTriangle, 
+  Trash2, 
+  ShieldAlert, 
+  Search,
   CheckCircle2,
-  Clock3,
-  ExternalLink,
-  LoaderCircle,
-  Plus,
-  RefreshCw,
-  ScanSearch,
-} from "lucide-react";
+  Clock,
+  AlertCircle
+} from 'lucide-react';
+import { api, Repo } from '@/lib/api';
 
-import { AppNavbar } from "@/components/app-navbar";
-import { formatRelativeTime, parseGithubRepoUrl } from "@/lib/github";
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
-
-type RepoRow = {
-  id: string;
-  user_id: string;
-  github_url: string;
-  owner: string;
-  name: string;
-  status: "pending" | "scanning" | "done" | "error" | string;
-  last_scanned_at: string | null;
-  finding_count: number | null;
-  ai_reasoning: string | null;
-  created_at: string | null;
-};
-
-type SessionUser = {
-  id: string;
-  email?: string | null;
-};
-
-function statusTone(status: string): string {
-  switch (status) {
-    case "scanning":
-      return "border-blue-400/30 bg-blue-400/15 text-blue-100";
-    case "done":
-      return "border-emerald-400/30 bg-emerald-400/15 text-emerald-100";
-    case "error":
-      return "border-red-400/30 bg-red-400/15 text-red-100";
-    default:
-      return "border-slate-400/30 bg-slate-400/15 text-slate-200";
-  }
-}
-
-function findingTone(count: number): string {
-  if (count <= 0) {
-    return "text-emerald-300";
-  }
-  if (count <= 5) {
-    return "text-amber-300";
-  }
-  return "text-red-300";
-}
-
-export default function ReposPage() {
+export default function Dashboard() {
   const router = useRouter();
-  const [user, setUser] = useState<SessionUser | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [repos, setRepos] = useState<RepoRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [showModal, setShowModal] = useState(false);
-  const [githubUrl, setGithubUrl] = useState("https://github.com/torvalds/linux");
-  const [actionBusy, setActionBusy] = useState(false);
-  const [modalError, setModalError] = useState<string | null>(null);
+  const [repos, setRepos] = useState<Repo[]>([]);
+  const [scores, setScores] = useState<Record<string, number>>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isError, setIsError] = useState(false);
+  
+  // Modal state
+  const [isOpen, setIsOpen] = useState(false);
+  const [githubUrl, setGithubUrl] = useState('');
+  const [validationError, setValidationError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
-
-  async function loadRepos(currentUserId?: string) {
-    if (!currentUserId) {
-      return;
+  const fetchRepos = async () => {
+    try {
+      setIsLoading(true);
+      const data = await api.listRepos();
+      setRepos(data);
+      setIsError(false);
+      
+      // Fetch scores in parallel for completed repos
+      const doneRepos = data.filter(r => r.status === 'done');
+      doneRepos.forEach(async (repo) => {
+        try {
+          const scoreData = await api.getScore(repo.id);
+          setScores(prev => ({
+            ...prev,
+            [repo.id]: scoreData.security_score
+          }));
+        } catch (err) {
+          console.error(`Failed to fetch score for repo ${repo.id}`, err);
+        }
+      });
+    } catch (err) {
+      setIsError(true);
+    } finally {
+      setIsLoading(false);
     }
-
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      setError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-      return;
-    }
-
-    const { data, error: repoError } = await supabase
-      .from("repos")
-      .select("*")
-      .eq("user_id", currentUserId)
-      .order("created_at", { ascending: false });
-
-    if (repoError) {
-      setError(repoError.message);
-      return;
-    }
-
-    setRepos((data as RepoRow[]) ?? []);
-  }
+  };
 
   useEffect(() => {
-    let active = true;
+    fetchRepos();
+  }, []);
 
-    async function bootstrap() {
-      if (!isSupabaseConfigured) {
-        setError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-        setLoading(false);
-        return;
-      }
-
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        setError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-        setLoading(false);
-        return;
-      }
-
-      const { data } = await supabase.auth.getSession();
-      const sessionUser = data.session?.user;
-      if (!sessionUser) {
-        router.replace("/login");
-        return;
-      }
-
-      if (!active) {
-        return;
-      }
-
-      setUser({ id: sessionUser.id, email: sessionUser.email });
-      setSessionToken(data.session?.access_token ?? null);
-      await loadRepos(sessionUser.id);
-      if (active) {
-        setLoading(false);
-      }
+  const handleAddRepo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setValidationError('');
+    
+    // Quick validation
+    const urlPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+)/;
+    if (!githubUrl.trim()) {
+      setValidationError('GitHub URL is required');
+      return;
     }
-
-    void bootstrap();
-    return () => {
-      active = false;
-    };
-  }, [router]);
-
-  const repoSummary = useMemo(() => {
-    const total = repos.length;
-    const scanning = repos.filter((repo) => repo.status === "scanning").length;
-    const alerts = repos.reduce((sum, repo) => sum + (repo.finding_count || 0), 0);
-    return { total, scanning, alerts };
-  }, [repos]);
-
-  async function handleAddRepo(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setModalError(null);
-
-    if (!user) {
-      setModalError("You must be signed in first.");
+    if (!urlPattern.test(githubUrl.trim())) {
+      setValidationError('Must be a valid GitHub URL, e.g. https://github.com/owner/repo');
       return;
     }
 
-    let parsed;
+    setIsSubmitting(true);
     try {
-      parsed = parseGithubRepoUrl(githubUrl);
-    } catch (parseError) {
-      setModalError(parseError instanceof Error ? parseError.message : "Invalid repository URL.");
+      const res = await api.createRepo(githubUrl.trim());
+      setIsOpen(false);
+      setGithubUrl('');
+      // Navigate directly to the repo details page
+      router.push(`/repos/${res.id}`);
+    } catch (err: any) {
+      setValidationError(err.message || 'Failed to register repository');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteRepo = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Avoid navigating to repo detail
+    if (!confirm('Are you sure you want to delete this repository? All findings and reports will be deleted.')) {
       return;
     }
 
-    setActionBusy(true);
     try {
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        setModalError("Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env.local.");
-        return;
-      }
-
-      const { data: repo, error: insertError } = await supabase
-        .from("repos")
-        .insert({
-          user_id: user.id,
-          github_url: parsed.githubUrl,
-          owner: parsed.owner,
-          name: parsed.name,
-          status: "pending",
-        })
-        .select("*")
-        .single();
-
-      if (insertError) {
-        throw insertError;
-      }
-
-      setShowModal(false);
-      setGithubUrl(`https://github.com/${parsed.owner}/${parsed.name}`);
-      await fetch(`${apiUrl}/scan`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-        },
-        body: JSON.stringify({ repo_id: repo.id }),
-      });
-      await loadRepos(user.id);
+      await api.deleteRepo(id);
+      setRepos(prev => prev.filter(r => r.id !== id));
     } catch (err) {
-      setModalError(err instanceof Error ? err.message : "Failed to add repository.");
-    } finally {
-      setActionBusy(false);
+      alert('Failed to delete repository');
     }
-  }
+  };
 
-  async function handleScanNow(repoId: string) {
-    setActionBusy(true);
-    try {
-      await fetch(`${apiUrl}/scan`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-        },
-        body: JSON.stringify({ repo_id: repoId }),
-      });
-      if (user) {
-        await loadRepos(user.id);
-      }
-    } finally {
-      setActionBusy(false);
+  const filteredRepos = repos.filter(repo => {
+    const fullName = `${repo.owner}/${repo.name}`.toLowerCase();
+    return fullName.includes(searchQuery.toLowerCase()) || repo.github_url.toLowerCase().includes(searchQuery.toLowerCase());
+  });
+
+  const getScoreColor = (score: number) => {
+    if (score >= 75) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
+    if (score >= 40) return 'text-amber-400 bg-amber-500/10 border-amber-500/20';
+    return 'text-red-400 bg-red-500/10 border-red-500/20';
+  };
+
+  const getStatusBadge = (status: Repo['status']) => {
+    switch (status) {
+      case 'pending':
+        return (
+          <span className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-300 border border-slate-700">
+            <Clock className="h-3 w-3" /> Pending
+          </span>
+        );
+      case 'scanning':
+        return (
+          <span className="inline-flex items-center gap-1 rounded bg-blue-900/40 px-2 py-0.5 text-xs font-semibold text-blue-400 border border-blue-800/40 animate-pulse">
+            <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-ping" /> Scanning
+          </span>
+        );
+      case 'done':
+        return (
+          <span className="inline-flex items-center gap-1 rounded bg-emerald-950/40 px-2 py-0.5 text-xs font-semibold text-emerald-400 border border-emerald-800/40">
+            <CheckCircle2 className="h-3 w-3" /> Complete
+          </span>
+        );
+      case 'error':
+        return (
+          <span className="inline-flex items-center gap-1 rounded bg-red-950/40 px-2 py-0.5 text-xs font-semibold text-red-400 border border-red-800/40">
+            <AlertCircle className="h-3 w-3" /> Error
+          </span>
+        );
     }
-  }
+  };
 
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-slate-950 text-slate-50">
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="flex items-center gap-3 text-slate-300">
-            <LoaderCircle className="size-5 animate-spin" />
-            Loading repositories...
-          </div>
-        </div>
-      </main>
-    );
-  }
+  const getFindingsColor = (count: number) => {
+    if (count === 0) return 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20';
+    if (count <= 5) return 'text-amber-400 bg-amber-500/10 border border-amber-500/20';
+    return 'text-red-400 bg-red-500/10 border border-red-500/20';
+  };
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(20,34,66,0.75),_rgba(5,10,18,1)_55%)] text-slate-50">
-      <AppNavbar />
-
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
-        <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-black/15 backdrop-blur">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-cyan-200/80">DarkShield</p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight">Monitored repositories</h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-                Add GitHub repositories to scan them for exposed secrets, then open any repo for a full AI-powered analysis.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowModal(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
-            >
-              <Plus className="size-4" />
-              Add Repo
-            </button>
-          </div>
-
-          <div className="mt-6 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-slate-950/65 p-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Repos</div>
-              <div className="mt-2 text-2xl font-semibold">{repoSummary.total}</div>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-slate-950/65 p-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Scanning</div>
-              <div className="mt-2 text-2xl font-semibold">{repoSummary.scanning}</div>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-slate-950/65 p-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Total Findings</div>
-              <div className="mt-2 text-2xl font-semibold">{repoSummary.alerts}</div>
-            </div>
-          </div>
-        </section>
-
-        {error ? (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100">
-            {error}
-          </div>
-        ) : null}
-
-        {!repos.length ? (
-          <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-6 text-emerald-100">
-            <div className="flex items-center gap-3 font-semibold">
-              <CheckCircle2 className="size-5" />
-              No repositories added yet.
-            </div>
-            <p className="mt-2 text-sm text-emerald-100/80">
-              Use the Add Repo button to start monitoring a GitHub repository.
-            </p>
-          </div>
-        ) : (
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {repos.map((repo) => (
-              <article
-                key={repo.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => router.push(`/repos/${repo.id}`)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    router.push(`/repos/${repo.id}`);
-                  }
-                }}
-                className="cursor-pointer rounded-3xl border border-white/10 bg-slate-950/75 p-5 shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:border-cyan-400/30 hover:bg-slate-950"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-lg font-semibold">{repo.owner}/{repo.name}</div>
-                    <div className="mt-1 text-xs text-slate-400">{repo.github_url}</div>
-                  </div>
-                  <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusTone(repo.status)}`}>
-                    {repo.status}
-                  </span>
-                </div>
-
-                <div className="mt-5 flex items-end justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Findings</div>
-                    <div className={`mt-1 text-3xl font-semibold ${findingTone(repo.finding_count || 0)}`}>
-                      {repo.finding_count || 0}
-                    </div>
-                  </div>
-                  <div className="text-right text-sm text-slate-300">
-                    <div className="flex items-center justify-end gap-2 text-slate-400">
-                      <Clock3 className="size-4" />
-                      Last scanned
-                    </div>
-                    <div className="mt-1">{formatRelativeTime(repo.last_scanned_at)}</div>
-                  </div>
-                </div>
-
-                <div className="mt-5 flex items-center justify-between gap-3">
-                  <Link
-                    href={`/repos/${repo.id}`}
-                    className="inline-flex items-center gap-2 text-sm font-medium text-cyan-200 transition hover:text-cyan-100"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    Open repo
-                    <ExternalLink className="size-4" />
-                  </Link>
-
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleScanNow(repo.id);
-                    }}
-                    disabled={actionBusy}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <ScanSearch className="size-4" />
-                    Scan Now
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
+    <div className="space-y-8">
+      {/* Top Banner / Actions */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-white">Security Command</h1>
+          <p className="text-slate-400 mt-1">Monitor and verify vulnerabilities, secrets, and supply chain exposure across repositories.</p>
+        </div>
+        <button
+          onClick={() => setIsOpen(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-accent-blue px-4 py-2.5 text-sm font-semibold text-white shadow-lg hover:bg-accent-blue-hover hover:shadow-accent-blue/20 transition-all cursor-pointer"
+        >
+          <Plus className="h-4.5 w-4.5" />
+          <span>Add Repository</span>
+        </button>
       </div>
 
-      {showModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-slate-950 p-6 shadow-2xl shadow-black/30">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold">Add GitHub Repository</h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  Paste a public GitHub repository URL to start monitoring it.
-                </p>
-              </div>
+      {/* Stats Counter Overview */}
+      {repos.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="rounded-xl border border-border-dark bg-panel p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Monitored Repositories</p>
+            <p className="mt-2 text-3xl font-bold text-white">{repos.length}</p>
+          </div>
+          <div className="rounded-xl border border-border-dark bg-panel p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Scanning in Progress</p>
+            <p className="mt-2 text-3xl font-bold text-blue-400">
+              {repos.filter(r => r.status === 'scanning').length}
+            </p>
+          </div>
+          <div className="rounded-xl border border-border-dark bg-panel p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Failed / Errors</p>
+            <p className="mt-2 text-3xl font-bold text-red-400">
+              {repos.filter(r => r.status === 'error').length}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      {isLoading ? (
+        <div className="flex h-64 flex-col items-center justify-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-800 border-t-accent-blue" />
+          <span className="text-sm font-medium text-slate-400">Loading repositories...</span>
+        </div>
+      ) : isError ? (
+        <div className="rounded-xl border border-red-500/20 bg-red-950/10 p-6 text-center text-red-400">
+          <p className="font-semibold">Failed to load monitored repositories.</p>
+          <button 
+            onClick={fetchRepos}
+            className="mt-3 inline-flex items-center gap-1 text-sm font-medium underline hover:text-red-300"
+          >
+            Retry request
+          </button>
+        </div>
+      ) : filteredRepos.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border-dark bg-panel/30 py-16 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 border border-border-dark text-slate-400">
+            <GitFork className="h-6 w-6" />
+          </div>
+          <h3 className="mt-4 text-lg font-bold text-white">No repositories monitored</h3>
+          <p className="mx-auto mt-2 max-w-sm text-sm text-slate-400">
+            {searchQuery ? "No repositories match your search query." : "Register your first GitHub repository to start scanning for secrets, dependency vulnerabilities, and insecure code configurations."}
+          </p>
+          {!searchQuery && (
+            <button
+              onClick={() => setIsOpen(true)}
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent-blue/15 border border-accent-blue/30 px-4 py-2 text-sm font-semibold text-accent-blue hover:bg-accent-blue/20 transition-all cursor-pointer"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Register Repository</span>
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Search bar */}
+          <div className="relative max-w-md">
+            <Search className="absolute top-3 left-3 h-4 w-4 text-slate-500" />
+            <input
+              type="text"
+              placeholder="Filter repositories..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-lg border border-border-dark bg-panel py-2 pr-4 pl-10 text-sm text-white placeholder-slate-500 focus:border-accent-blue focus:outline-none focus:ring-1 focus:ring-accent-blue"
+            />
+          </div>
+
+          {/* Grid of cards */}
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredRepos.map((repo) => {
+              const score = scores[repo.id];
+              return (
+                <div
+                  key={repo.id}
+                  onClick={() => router.push(`/repos/${repo.id}`)}
+                  className="group relative flex flex-col justify-between rounded-xl border border-border-dark bg-panel hover:border-slate-700 hover:bg-panel-light p-6 transition-all duration-200 cursor-pointer shadow-lg hover:shadow-black/40"
+                >
+                  <div className="space-y-4">
+                    {/* Card Header */}
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2 max-w-[80%]">
+                        <GitFork className="h-4 w-4 text-slate-500 shrink-0" />
+                        <span className="font-mono text-sm font-bold text-white truncate" title={`${repo.owner}/${repo.name}`}>
+                          {repo.owner}/{repo.name}
+                        </span>
+                      </div>
+                      <a
+                        href={repo.github_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()} // Stop navigation
+                        className="text-slate-500 hover:text-white transition-colors"
+                        title="Open on GitHub"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+
+                    {/* Status badges row */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {getStatusBadge(repo.status)}
+                      
+                      {repo.status === 'done' && (
+                        <span className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-semibold ${getFindingsColor(repo.finding_count)}`}>
+                          <ShieldAlert className="h-3 w-3" /> {repo.finding_count} {repo.finding_count === 1 ? 'finding' : 'findings'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Card Footer / Scores */}
+                  <div className="mt-6 flex items-center justify-between border-t border-border-dark/60 pt-4">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500">Security Rating</span>
+                      {repo.status === 'done' ? (
+                        score !== undefined ? (
+                          <span className={`text-lg font-extrabold ${getScoreColor(score)} mt-0.5`}>
+                            {score} / 100
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-sm font-semibold mt-1">Fetching...</span>
+                        )
+                      ) : (
+                        <span className="text-slate-500 text-xs font-semibold mt-1">—</span>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={(e) => handleDeleteRepo(repo.id, e)}
+                      className="rounded p-1.5 text-slate-500 hover:bg-red-950/20 hover:text-red-400 transition-colors"
+                      title="Remove Repository"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Dialog */}
+      {isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div 
+            className="w-full max-w-lg rounded-xl border border-border-dark bg-panel p-6 shadow-2xl animate-in fade-in zoom-in duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between">
+              <h2 className="text-xl font-bold text-white">Monitor New Repository</h2>
               <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="rounded-full border border-white/10 px-3 py-1 text-sm text-slate-300 transition hover:bg-white/5"
+                onClick={() => {
+                  setIsOpen(false);
+                  setValidationError('');
+                  setGithubUrl('');
+                }}
+                className="text-slate-400 hover:text-white text-lg font-semibold cursor-pointer"
               >
-                Close
+                &times;
               </button>
             </div>
+            
+            <form onSubmit={handleAddRepo} className="mt-4 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  GitHub Repository URL
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. https://github.com/octocat/Hello-World"
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  disabled={isSubmitting}
+                  className="mt-2 w-full rounded-lg border border-border-dark bg-background py-2.5 px-3.5 text-sm text-white placeholder-slate-500 focus:border-accent-blue focus:outline-none focus:ring-1 focus:ring-accent-blue disabled:opacity-50"
+                  autoFocus
+                />
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Only public repositories are currently supported. The scanner will fetch repository commits, dependencies, and code configuration.
+                </p>
+              </div>
 
-            <form onSubmit={handleAddRepo} className="mt-5 space-y-4">
-              <input
-                value={githubUrl}
-                onChange={(event) => setGithubUrl(event.target.value)}
-                placeholder="https://github.com/owner/repo"
-                className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-50 outline-none placeholder:text-slate-500 focus:border-cyan-400/40"
-              />
-
-              {modalError ? (
-                <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-100">
-                  {modalError}
+              {validationError && (
+                <div className="flex items-start gap-2 rounded-lg bg-red-950/20 border border-red-500/20 p-3 text-xs text-red-400">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>{validationError}</span>
                 </div>
-              ) : null}
+              )}
 
-              <div className="flex items-center justify-end gap-3">
+              <div className="flex justify-end gap-3 mt-6">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+                  onClick={() => {
+                    setIsOpen(false);
+                    setValidationError('');
+                    setGithubUrl('');
+                  }}
+                  disabled={isSubmitting}
+                  className="rounded-lg border border-border-dark bg-transparent px-4 py-2 text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={actionBusy}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={isSubmitting}
+                  className="rounded-lg bg-accent-blue px-4 py-2 text-sm font-semibold text-white hover:bg-accent-blue-hover transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
-                  {actionBusy ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  Add and Scan
+                  {isSubmitting ? (
+                    <>
+                      <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Registering...</span>
+                    </>
+                  ) : (
+                    <span>Register Repository</span>
+                  )}
                 </button>
               </div>
             </form>
           </div>
         </div>
-      ) : null}
-    </main>
+      )}
+    </div>
   );
 }

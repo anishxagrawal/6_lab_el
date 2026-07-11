@@ -3,33 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3000",
     "lint": "eslint"
   },
   "dependencies": {
-    "@radix-ui/react-slot": "^1.2.4",
-    "@supabase/auth-helpers-nextjs": "^0.15.0",
-    "@supabase/supabase-js": "^2.106.2",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "lucide-react": "^1.14.0",
-    "next": "16.2.6",
+    "lucide-react": "^1.24.0",
+    "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-markdown": "^10.1.0",
-    "recharts": "^3.8.1",
-    "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.5.0"
+    "recharts": "^3.9.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
