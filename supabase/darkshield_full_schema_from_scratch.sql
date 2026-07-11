@@ -14,6 +14,7 @@ drop table if exists public.case_findings cascade;
 drop table if exists public.cases cascade;
 drop table if exists public.alerts cascade;
 drop table if exists public.critical_alert_notifications cascade;
+drop table if exists public.scan_reports cascade;
 drop table if exists public.findings cascade;
 drop table if exists public.clusters cascade;
 drop table if exists public.repos cascade;
@@ -53,6 +54,7 @@ create table public.repos (
   last_scanned_at  timestamptz,
   finding_count    int not null default 0,
   ai_reasoning     text,
+  report_signature text,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
   unique (user_id, github_url),
@@ -86,31 +88,52 @@ create table public.scan_targets (
 );
 
 create table public.findings (
-  id                   uuid primary key default gen_random_uuid(),
-  repo_id              uuid references public.repos(id) on delete cascade,
-  raw_page_id          uuid references public.raw_pages(id) on delete set null,
-  file_path            text not null,
-  line_number          int not null check (line_number > 0),
-  secret_type          text not null,
-  severity             text not null check (severity in ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
-  snippet              text not null,
-  secret_hash          text not null,
-  cluster_id           uuid references public.clusters(id) on delete set null,
-  source_type          text check (source_type in ('onion', 'paste', 'simulated', 'web', 'github', 'gitlab')),
-  ai_label             text,
-  ai_confidence        double precision,
-  groq_summary         text,
-  shap_explanation     jsonb,
-  reasoning_summary    text,
-  embedding_metadata   jsonb,
-  classifier_metadata   jsonb,
-  context_window       text,
-  matched_value        text,
-  target_domain_match  boolean not null default false,
-  is_reviewed          boolean not null default false,
-  ai_suggested_fix     text,
-  created_at           timestamptz not null default now(),
+  id                        uuid primary key default gen_random_uuid(),
+  repo_id                   uuid references public.repos(id) on delete cascade,
+  raw_page_id               uuid references public.raw_pages(id) on delete set null,
+  file_path                 text not null,
+  line_number               int not null check (line_number >= 0), -- Modified check constraint to support 0 for Trivy & Git history findings
+  secret_type               text not null,
+  severity                  text not null check (severity in ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
+  snippet                   text not null,
+  snippet_enc               text,
+  secret_hash               text not null,
+  cluster_id                uuid references public.clusters(id) on delete set null,
+  source_type               text check (source_type in ('onion', 'paste', 'simulated', 'web', 'github', 'gitlab', 'trivy', 'semgrep', 'pattern', 'entropy')),
+  detection_method          text default 'pattern',
+  entropy_score             numeric,
+  found_in                  text default 'current',
+  commit_hash               text,
+  first_commit_date         timestamptz,
+  exposure_days             int,
+  exposure_score            numeric,
+  ai_label                  text,
+  ai_confidence             double precision,
+  groq_summary              text,
+  shap_explanation          jsonb,
+  reasoning_summary         text,
+  embedding_metadata        jsonb,
+  classifier_metadata       jsonb,
+  context_window            text,
+  matched_value             text,
+  target_domain_match       boolean not null default false,
+  is_reviewed               boolean not null default false,
+  ai_suggested_fix          text,
+  rule_id                   text,
+  rule_name                 text,
+  owasp_category            text,
+  vulnerability_description  text,
+  recommendation            text,
+  created_at                timestamptz not null default now(),
   unique (repo_id, file_path, line_number, secret_hash)
+);
+
+create table public.scan_reports (
+  id             uuid primary key default gen_random_uuid(),
+  repo_id        uuid references public.repos(id) on delete cascade,
+  report_payload jsonb not null,
+  signature      text not null,
+  created_at     timestamptz default now()
 );
 
 create table public.alerts (
@@ -216,10 +239,19 @@ create index if not exists idx_findings_cluster_id on public.findings (cluster_i
 create index if not exists idx_findings_secret_type on public.findings (secret_type);
 create index if not exists idx_findings_severity on public.findings (severity);
 create index if not exists idx_findings_source_type on public.findings (source_type);
+create index if not exists idx_findings_detection_method on public.findings (detection_method);
+create index if not exists idx_findings_found_in on public.findings (found_in);
+create index if not exists idx_findings_commit_hash on public.findings (commit_hash);
+create index if not exists idx_findings_exposure_days on public.findings (exposure_days);
+create index if not exists idx_findings_exposure_score on public.findings (exposure_score);
+create index if not exists idx_findings_rule_id on public.findings (rule_id);
+create index if not exists idx_findings_owasp_category on public.findings (owasp_category);
 create index if not exists idx_findings_created_at on public.findings (created_at desc);
 create index if not exists idx_findings_ai_label on public.findings (ai_label);
 create index if not exists idx_findings_ai_confidence on public.findings (ai_confidence);
 create index if not exists idx_findings_target_domain_match on public.findings (target_domain_match);
+
+create index if not exists idx_scan_reports_repo_id on public.scan_reports (repo_id);
 
 create index if not exists idx_alerts_finding_id on public.alerts (finding_id);
 create index if not exists idx_alerts_cooldown_key on public.alerts (cooldown_key);
@@ -274,6 +306,7 @@ execute function public.set_updated_at();
 alter table public.repos enable row level security;
 alter table public.clusters enable row level security;
 alter table public.findings enable row level security;
+alter table public.scan_reports enable row level security;
 alter table public.critical_alert_notifications enable row level security;
 
 -- repos
@@ -312,6 +345,41 @@ create policy "Clusters readable by authenticated users"
 on public.clusters
 for select
 using (auth.role() = 'authenticated');
+
+drop policy if exists "Clusters insertable by authenticated users" on public.clusters;
+create policy "Clusters insertable by authenticated users"
+on public.clusters
+for insert
+with check (auth.role() = 'authenticated');
+
+drop policy if exists "Clusters updatable by authenticated users" on public.clusters;
+create policy "Clusters updatable by authenticated users"
+on public.clusters
+for update
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
+
+-- scan_reports
+drop policy if exists "Users see own scan reports" on public.scan_reports;
+create policy "Users see own scan reports"
+on public.scan_reports
+for all
+using (
+  exists (
+    select 1
+    from public.repos r
+    where r.id = scan_reports.repo_id
+      and r.user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.repos r
+    where r.id = scan_reports.repo_id
+      and r.user_id = auth.uid()
+  )
+);
 
 -- critical alert notifications
 drop policy if exists "Critical alert notifications selectable by owner" on public.critical_alert_notifications;
@@ -360,22 +428,5 @@ with check (
       and r.user_id = auth.uid()
   )
 );
-
-drop policy if exists "Clusters insertable by authenticated users" on public.clusters;
-create policy "Clusters insertable by authenticated users"
-on public.clusters
-for insert
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "Clusters updatable by authenticated users" on public.clusters;
-create policy "Clusters updatable by authenticated users"
-on public.clusters
-for update
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
-
--- -------------------------------------------------------------------
--- Commit
--- -------------------------------------------------------------------
 
 commit;
