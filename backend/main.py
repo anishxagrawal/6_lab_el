@@ -684,7 +684,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                                 smtp_timeout=SMTP_TIMEOUT,
                                 alert_email_from=ALERT_EMAIL_FROM,
                                 alert_email_to=ALERT_EMAIL_TO,
-                                hmac_sha256_hex=hmac_sha256_hex,
+                                hmac_sha256_hex=lambda val: hmac_sha256_hex(HMAC_SECRET_KEY, val),
                                 debug_log=debug_log,
                             )
 
