@@ -61,6 +61,8 @@ def _build_history_finding(
     entropy_score: float | None,
     secret_hash: str,
     encrypt_snippet,
+    provider: str | None = None,
+    confidence: str | None = None,
 ) -> dict[str, Any]:
     plain_snippet = line_content.strip()[:120]
     encrypted_snippet = encrypt_snippet(plain_snippet)
@@ -83,6 +85,11 @@ def _build_history_finding(
         "found_in": "history",
         "commit_hash": commit_hash,
     }
+
+    if provider is not None:
+        finding["provider"] = provider
+    if confidence is not None:
+        finding["confidence"] = confidence
 
     if entropy_score is not None:
         finding["entropy_score"] = entropy_score
@@ -145,7 +152,7 @@ def scan_git_history(
         added_content = raw_line[1:]
         matched_spans: list[tuple[int, int]] = []
 
-        for secret_type, (pattern, severity) in PATTERNS.items():
+        for secret_type, (pattern, severity, provider, confidence) in PATTERNS.items():
             match = re.search(pattern, added_content)
             if not match:
                 continue
@@ -172,6 +179,8 @@ def scan_git_history(
                     entropy_score=None,
                     secret_hash=secret_hash,
                     encrypt_snippet=encrypt_snippet,
+                    provider=provider,
+                    confidence=confidence,
                 )
             )
 
@@ -219,6 +228,8 @@ def scan_git_history(
                         entropy_score=hit["entropy"],
                         secret_hash=secret_hash,
                         encrypt_snippet=encrypt_snippet,
+                        provider="Generic/Entropy",
+                        confidence="MEDIUM",
                     )
                 )
 

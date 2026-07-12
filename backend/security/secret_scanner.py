@@ -7,48 +7,68 @@ import httpx
 
 from security.entropy import find_high_entropy_tokens
 
-PATTERNS: dict[str, tuple[str, str]] = {
-    "AWS Access Key": (r"AKIA[0-9A-Z]{16}", "HIGH"),
+PATTERNS: dict[str, tuple[str, str, str, str]] = {
+    "AWS Access Key": (r"AKIA[0-9A-Z]{16}", "HIGH", "AWS", "HIGH"),
     "AWS Secret Key": (
         r"(?i)aws.{0,20}secret.{0,20}[\'\"][0-9a-zA-Z/+=]{40}[\'\"]",
         "CRITICAL",
+        "AWS",
+        "HIGH",
     ),
-    "OpenAI Key": (r"sk-[a-zA-Z0-9]{32,}", "HIGH"),
+    "OpenAI Key": (r"sk-[a-zA-Z0-9]{32,}", "HIGH", "OpenAI", "HIGH"),
     "Anthropic Key": (
         r"sk-ant-[a-zA-Z0-9\-]{90,}",
+        "HIGH",
+        "Anthropic",
         "HIGH",
     ),
     "Groq Key": (
         r"gsk_[a-zA-Z0-9]{50,}",
         "HIGH",
+        "Groq",
+        "HIGH",
     ),
     "GitHub Token": (
         r"gh[pousr]_[A-Za-z0-9_]{36,}",
+        "HIGH",
+        "GitHub",
         "HIGH",
     ),
     "Stripe Secret": (
         r"sk_live_[0-9a-zA-Z]{24,}",
         "CRITICAL",
+        "Stripe",
+        "HIGH",
     ),
     "Google API Key": (
         r"AIza[0-9A-Za-z\-_]{35}",
+        "HIGH",
+        "Google",
         "HIGH",
     ),
     "Slack Token": (
         r"xox[baprs]-[0-9a-zA-Z\-]{10,}",
         "MEDIUM",
+        "Slack",
+        "HIGH",
     ),
     "Private Key": (
         r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----",
         "CRITICAL",
+        "Generic/Private Key",
+        "HIGH",
     ),
     "Generic Password": (
         r"(?i)(password|passwd|pwd)\s*[:=]\s*[\"']?[^\s\"']{8,}[\"']?",
         "MEDIUM",
+        "Generic",
+        "LOW",
     ),
     "Generic Secret": (
         r"(?i)(secret|api_key|api_secret|access_token)\s*[:=]\s*[\"']?[^\s\"']{8,}[\"']?",
         "MEDIUM",
+        "Generic",
+        "LOW",
     ),
 }
 
@@ -116,6 +136,8 @@ def _build_finding(
     hmac_secret_key: str,
     first_commit_date,
     exposure_days: int | None,
+    provider: str | None = None,
+    confidence: str | None = None,
 ) -> dict[str, Any]:
     """
     Build a single finding dict. Shared by both the regex-pattern detection
@@ -147,6 +169,11 @@ def _build_finding(
         "secret_hash": secret_hash,
         "detection_method": detection_method,
     }
+
+    if provider is not None:
+        finding["provider"] = provider
+    if confidence is not None:
+        finding["confidence"] = confidence
 
     if entropy_score is not None:
         finding["entropy_score"] = entropy_score
@@ -213,6 +240,8 @@ async def scan_file(
                 (
                     pattern,
                     severity,
+                    provider,
+                    confidence,
                 ),
             ) in PATTERNS.items():
 
@@ -243,6 +272,8 @@ async def scan_file(
                         hmac_secret_key=hmac_secret_key,
                         first_commit_date=first_commit_date,
                         exposure_days=exposure_days,
+                        provider=provider,
+                        confidence=confidence,
                     )
                 )
 
@@ -288,6 +319,8 @@ async def scan_file(
                             hmac_secret_key=hmac_secret_key,
                             first_commit_date=first_commit_date,
                             exposure_days=exposure_days,
+                            provider="Generic/Entropy",
+                            confidence="MEDIUM",
                         )
                     )
 

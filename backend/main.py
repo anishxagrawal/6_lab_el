@@ -385,6 +385,13 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
 
     cloned_repo_path = None
     semgrep_result = None
+    repo_profile = {
+        "languages": [],
+        "frameworks": [],
+        "infrastructure": [],
+        "security_features": [],
+        "apis": [],
+    }
 
     try:
         cloned_repo_path = clone_repository(
@@ -395,6 +402,14 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         print(
             f"SEMGREP: Repository cloned to {cloned_repo_path}"
         )
+
+        # Build repository profile
+        from core.profiler import build_repository_profile
+        try:
+            repo_profile = build_repository_profile(cloned_repo_path)
+            print(f"PROFILE: Detected tech stack: {repo_profile}")
+        except Exception as e:
+            print(f"WARNING: Repository profiling failed: {e}")
 
         semgrep_result = (
             semgrep_service.analyze_and_convert(
@@ -630,7 +645,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         findings_for_reasoning.append(finding)
 
     print("AI: Generating AI reasoning...")
-    ai_reasoning = build_reasoning(owner, name, findings_for_reasoning, groq_client)
+    ai_reasoning = build_reasoning(owner, name, findings_for_reasoning, groq_client, repo_profile=repo_profile)
     critical_findings = [finding for finding in unique_findings if str(finding.get("severity") or "").upper() == "CRITICAL"]
     print(f"ALERT: Critical findings: {len(critical_findings)}")
 

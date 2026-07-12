@@ -92,14 +92,10 @@ def run_semgrep(
     """
     Execute Semgrep scan.
 
-    Merges the registry-based SEMGREP_CONFIG ("auto" by default) with
-    any local custom rule packs (e.g. rules/crypto_misuse.yml), each
-    passed as its own --config flag so Semgrep runs both rule sets in
-    a single invocation.
-
-    Returns:
-        Raw Semgrep JSON output.
+    Loads Semgrep registry rule packs dynamically based on the detected
+    languages and infrastructure, combined with local custom rule packs.
     """
+    from core.profiler import build_repository_profile
 
     semgrep_executable = (
         _find_semgrep_executable()
@@ -108,9 +104,35 @@ def run_semgrep(
     command = [
         semgrep_executable,
         "scan",
-        "--config",
-        SEMGREP_CONFIG,
     ]
+
+    try:
+        profile = build_repository_profile(repo_path)
+    except Exception as e:
+        print(f"WARNING: Repository profiling failed: {e}")
+        profile = {}
+
+    configs = []
+    
+    langs = profile.get("languages", [])
+    if "Python" in langs:
+        configs += ["p/python", "p/security-audit", "p/secrets"]
+    if "JavaScript" in langs or "TypeScript" in langs or "JavaScript (React)" in langs or "TypeScript (React)" in langs:
+        configs += ["p/javascript", "p/react", "p/nodejs"]
+
+    infra = profile.get("infrastructure", [])
+    if "Docker" in infra or "Docker Compose" in infra:
+        configs += ["p/docker"]
+    if "Terraform" in infra:
+        configs += ["p/terraform"]
+    if "Kubernetes" in infra:
+        configs += ["p/kubernetes"]
+
+    if not configs:
+        configs = [SEMGREP_CONFIG]
+
+    for config in configs:
+        command += ["--config", config]
 
     for custom_config in _resolve_custom_configs():
         command += ["--config", custom_config]

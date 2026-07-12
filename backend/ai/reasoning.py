@@ -27,12 +27,13 @@ def build_reasoning(
     name: str,
     findings: list[dict[str, Any]],
     groq_client: Groq | None,
+    repo_profile: dict[str, Any] | None = None,
 ) -> str:
 
     if not findings:
 
         return (
-            "No exposed secrets were "
+            "No security findings or exposed secrets were "
             "detected in this repository scan."
         )
 
@@ -55,22 +56,17 @@ def build_reasoning(
         )
 
     breakdown = ", ".join(
-        (
-            f"{count}x {secret_type}"
-            for secret_type, count in sorted(
-                type_counts.items(),
-                key=lambda item: (
-                    -item[1],
-                    item[0],
-                ),
-            )
+        f"{v}x {k}"
+        for k, v in sorted(
+            type_counts.items(),
+            key=lambda x: -x[1],
         )
     )
 
     critical_count = sum(
         1
         for finding in findings
-        if finding["severity"]
+        if finding["severity"].upper()
         == "CRITICAL"
     )
 
@@ -103,18 +99,32 @@ def build_reasoning(
 
     findings_details = "\n".join(details_lines[:10])
 
+    profile_desc = ""
+    if repo_profile:
+        profile_desc = (
+            f"Repository Technology Profile:\n"
+            f"- Languages: {', '.join(repo_profile.get('languages', [])) or 'None'}\n"
+            f"- Frameworks: {', '.join(repo_profile.get('frameworks', [])) or 'None'}\n"
+            f"- Infrastructure: {', '.join(repo_profile.get('infrastructure', [])) or 'None'}\n"
+            f"- Security Features: {', '.join(repo_profile.get('security_features', [])) or 'None'}\n"
+            f"- APIs: {', '.join(repo_profile.get('apis', [])) or 'None'}\n\n"
+        )
+
     prompt = (
         f"GitHub repo {owner}/{name} scan summary:\n"
         f"- Total findings exposed: {len(findings)}\n"
         f"- Critical severity count: {critical_count}\n"
         f"- Type breakdown: {breakdown}\n"
         f"- Leaked in other monitored repos (cross-repo reuse): {cross_repo}\n\n"
+        f"{profile_desc}"
         f"Specific key findings details (up to 10 unique items):\n"
         f"{findings_details}\n\n"
-        "Provide a high-quality, professional security analysis summary. "
-        "Mention specific files and categories in your answer (e.g. 'A critical Generic API Key is leaked in public/index.html'). "
-        "Answer the following: What is the specific risk profile of this repository, what are the most urgent remediation actions, "
-        "and what does the cross-repo leakage imply?"
+        "Provide a high-quality, professional executive security report. "
+        "Your report must follow these sections:\n"
+        "1. **Executive Summary**: A concise assessment of the risk profile and overall security posture.\n"
+        "2. **Technology Stack Context**: Relate the scanned stack and detected APIs/infrastructure to security practices.\n"
+        "3. **Canary & Exploit Analysis**: Address whether the detected findings are false positives or can be actively exploited in this repository layout.\n"
+        "4. **Prioritized Remediation Plan**: List clear steps to remediate the vulnerabilities, referencing the specific files."
     )
 
     if groq_client is None:
@@ -144,14 +154,9 @@ def build_reasoning(
                             "system",
                         "content":
                             (
-                                "You are a senior "
-                                "security analyst. "
-                                "Think step by step "
-                                "inside <thinking> "
-                                "tags, then write "
-                                "a plain-English "
-                                "summary under "
-                                "120 words."
+                                "You are a senior security analyst. "
+                                "Think step by step inside <thinking> tags, "
+                                "then write a professional executive security report."
                             ),
                     },
                     {
@@ -161,7 +166,7 @@ def build_reasoning(
                             prompt,
                     },
                 ],
-                max_tokens=350,
+                max_tokens=750,
             )
         )
 
