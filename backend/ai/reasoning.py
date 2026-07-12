@@ -124,7 +124,12 @@ def build_reasoning(
         "1. **Executive Summary**: A concise assessment of the risk profile and overall security posture.\n"
         "2. **Technology Stack Context**: Relate the scanned stack and detected APIs/infrastructure to security practices.\n"
         "3. **Canary & Exploit Analysis**: Address whether the detected findings are false positives or can be actively exploited in this repository layout.\n"
-        "4. **Prioritized Remediation Plan**: List clear steps to remediate the vulnerabilities, referencing the specific files."
+        "4. **Prioritized Remediation Plan**: List clear steps to remediate the vulnerabilities, referencing the specific files.\n\n"
+        "Guidelines for report generation:\n"
+        "- Consider findings supported by multiple scanners (scanner agreement) as high-confidence.\n"
+        "- Prioritize vulnerabilities confirmed by CodeQL.\n"
+        "- Mention when vulnerabilities are confirmed by semantic data-flow analysis and call flows.\n"
+        "- Do not discuss rejected findings."
     )
 
     if groq_client is None:

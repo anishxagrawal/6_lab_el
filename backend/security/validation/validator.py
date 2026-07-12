@@ -60,7 +60,11 @@ def run_validation_pipeline(
     needs_review_list = []
     rejected_list = []
 
-    for f in raw_findings:
+    # Run cross-scanner correlation engine (Phase 10)
+    from security.correlation.correlator import correlate_scanner_findings
+    correlated_findings = correlate_scanner_findings(raw_findings, repo_profile)
+
+    for f in correlated_findings:
         # Create full finding copy to prevent mutations
         finding = dict(f)
         
@@ -102,18 +106,25 @@ def run_validation_pipeline(
     # Final root cause clustering
     clusters = cluster_vulnerabilities(deduped)
 
-    # Dynamic security score calculation based on VALIDATED findings only
+    # Dynamic security score calculation based on VALIDATED findings only (Phase 15)
     sec_score = 100
     for f in validated_list:
         sev = str(f.get("severity") or "LOW").upper()
+        deduction = 0
         if sev == "CRITICAL":
-            sec_score -= 15
+            deduction = 15
         elif sev == "HIGH":
-            sec_score -= 8
+            deduction = 8
         elif sev == "MEDIUM":
-            sec_score -= 3
+            deduction = 3
         elif sev == "LOW":
-            sec_score -= 1
+            deduction = 1
+            
+        supporting = f.get("supporting_scanners", [])
+        if "codeql" in supporting and len(supporting) >= 2:
+            deduction = int(deduction * 1.5)
+            
+        sec_score -= deduction
 
     sec_score = max(0, min(100, sec_score))
 
@@ -138,6 +149,8 @@ def run_validation_pipeline(
             "root_cause": f.get("root_cause", "Code Vulnerability"),
             "occurrences": f.get("occurrences", []),
             "recommendation": f.get("recommendation") or "Remediate exposed credential or update config.",
+            "supporting_scanners": f.get("supporting_scanners", [f.get("source_type", "secrets")]),
+            "code_flow": f.get("code_flow", [])
         })
 
     return {

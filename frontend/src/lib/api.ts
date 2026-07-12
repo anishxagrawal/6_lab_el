@@ -93,6 +93,8 @@ export interface ValidatedFinding {
   root_cause: string;
   occurrences: any[];
   recommendation: string;
+  supporting_scanners?: string[];
+  code_flow?: { file: string; line: number; label: string }[];
 }
 
 export interface ValidatedFindingsDataset {

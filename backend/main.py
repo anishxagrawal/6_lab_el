@@ -49,6 +49,7 @@ from security.secret_scanner import (
 from security.git_history_scanner import GitHistoryScanError, scan_git_history
 from security.semgrep.service import SemgrepService
 from security.trivy.service import TrivyService
+from security.codeql.service import CodeQLService
 
 import httpx
 from dotenv import load_dotenv
@@ -576,10 +577,30 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         f"TRIVY: {len(trivy_findings)} findings"
     )
 
+    codeql_service = CodeQLService()
+    codeql_result = {
+        "records": [],
+        "total_findings": 0,
+    }
+    if cloned_repo_path:
+        try:
+            print("CODEQL: Running dynamic CodeQL database analysis...")
+            codeql_result = codeql_service.analyze_and_convert(
+                repo_id=req.repo_id,
+                repo_path=cloned_repo_path,
+                repo_profile=repo_profile
+            )
+            print(f"CODEQL: Found {codeql_result['total_findings']} findings")
+        except Exception as exc:
+            print(f"WARNING: CodeQL scan failed: {exc}")
+
+    codeql_findings = codeql_result["records"]
+
     all_findings = (
         unique_findings
         + semgrep_findings
         + trivy_findings
+        + codeql_findings
     )
 
     # AI-powered remediation suggestions (Phase 6): bounded to the top 10
@@ -640,7 +661,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         print("OK: Findings saved")
 
     from security.validation.validator import run_validation_pipeline
-    validation_dataset = run_validation_pipeline(req.repo_id, unique_findings, repo_profile)
+    validation_dataset = run_validation_pipeline(req.repo_id, all_findings, repo_profile)
 
     findings_for_reasoning: list[dict[str, Any]] = []
     for f in validation_dataset["findings"]:
@@ -754,7 +775,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
     return {
         "repo_id": req.repo_id,
         "github_url": github_url,
-        "total": len(all_findings),
+        "total": len(validation_dataset["findings"]),
         "ai_reasoning": ai_reasoning,
         "critical_alerts_enabled": mail_alerts_enabled(
             SMTP_HOST,
@@ -764,7 +785,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         ),
         "critical_alert_email_sent": mail_sent,
         "critical_alert_error": mail_error,
-        "critical_findings": len(critical_findings),
+        "critical_findings": len(critical_validated_findings),
         "report_payload": report_payload,
         "report_signature": report_signature,
         # Phase 8: this was already computed by SemgrepService (RAG-retrieved

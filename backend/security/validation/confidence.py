@@ -15,7 +15,18 @@ def calculate_confidence(finding: Dict[str, Any], repo_profile: Dict[str, Any]) 
     snippet = finding.get("snippet") or ""
 
     # 1. Base score by engine type
-    if source_type in ["pattern", "secrets"]:
+    if source_type == "codeql":
+        score = 85
+        precision = finding.get("precision", "high").lower()
+        if precision == "high":
+            score += 10
+        elif precision == "medium":
+            score += 5
+        
+        # Data flow presence boost
+        if finding.get("code_flow"):
+            score += 10
+    elif source_type in ["pattern", "secrets"]:
         score = 80
         # Check provider and formats
         provider = finding.get("provider")
@@ -81,6 +92,9 @@ def calculate_confidence(finding: Dict[str, Any], repo_profile: Dict[str, Any]) 
     # 5. Evidence check (Rule 6)
     if not snippet or not finding.get("file_path"):
         return 0, "REJECTED"
+
+    # 6. Apply correlation agreement/disagreement modifiers
+    score += finding.get("confidence_modifier", 0)
 
     # Limit score boundaries
     score = max(0, min(100, score))

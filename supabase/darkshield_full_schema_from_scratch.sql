@@ -100,7 +100,7 @@ create table public.findings (
   snippet_enc               text,
   secret_hash               text not null,
   cluster_id                uuid references public.clusters(id) on delete set null,
-  source_type               text check (source_type in ('onion', 'paste', 'simulated', 'web', 'github', 'gitlab', 'trivy', 'semgrep', 'pattern', 'entropy')),
+  source_type               text check (source_type in ('onion', 'paste', 'simulated', 'web', 'github', 'gitlab', 'trivy', 'semgrep', 'pattern', 'entropy', 'codeql')),
   detection_method          text default 'pattern',
   entropy_score             numeric,
   found_in                  text default 'current',
@@ -125,6 +125,11 @@ create table public.findings (
   owasp_category            text,
   vulnerability_description  text,
   recommendation            text,
+  cwe                       text,
+  precision                 text,
+  code_flow                 jsonb,
+  confidence                text,
+  provider                  text,
   created_at                timestamptz not null default now(),
   unique (repo_id, file_path, line_number, secret_hash)
 );

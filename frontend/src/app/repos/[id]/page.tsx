@@ -60,7 +60,7 @@ export default function RepoDetailPage() {
   const [copiedSig, setCopiedSig] = useState(false);
 
   // Filters & Sorting
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'secrets' | 'semgrep' | 'trivy'>('all');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'secrets' | 'semgrep' | 'trivy' | 'codeql'>('all');
   const [severityFilter, setSeverityFilter] = useState<'all' | 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'>('all');
   const [sortBy, setSortBy] = useState<'severity' | 'exposure'>('severity');
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
@@ -101,6 +101,8 @@ export default function RepoDetailPage() {
         recommendation: f.recommendation,
         status: f.status,
         confidence: f.confidence,
+        supporting_scanners: f.supporting_scanners,
+        code_flow: f.code_flow,
         occurrences: f.occurrences.map((o: any) => ({
           file_path: o.file_path,
           line_number: o.line_number,
@@ -604,9 +606,9 @@ export default function RepoDetailPage() {
                 <Cpu className="h-4.5 w-4.5 text-accent-blue" />
                 AI Risk Assessment (Groq/Llama-3.3)
               </h3>
-              <p className="text-sm text-slate-300 leading-relaxed max-w-4xl">
-                {repo.ai_reasoning}
-              </p>
+              <div className="max-w-4xl">
+                <MarkdownRenderer content={repo.ai_reasoning} />
+              </div>
             </div>
           )}
 
@@ -768,6 +770,7 @@ export default function RepoDetailPage() {
                   <option value="secrets">Secret Scanner</option>
                   <option value="semgrep">Static Analysis (Semgrep)</option>
                   <option value="trivy">Dependencies (Trivy)</option>
+                  <option value="codeql">Semantic Analysis (CodeQL)</option>
                 </select>
 
                 {/* Severity Filter */}
@@ -825,7 +828,7 @@ export default function RepoDetailPage() {
                       <th className="w-8"></th>
                       <th className="py-3 px-4">Severity</th>
                       <th className="py-3 px-4">Type</th>
-                      <th className="py-3 px-4">Engine</th>
+                      <th className="py-3 px-4">Confirmed By</th>
                       <th className="py-3 px-4">File Location</th>
                       <th className="py-3 px-4">Score</th>
                     </tr>
@@ -882,7 +885,19 @@ export default function RepoDetailPage() {
                               {finding.secret_type || finding.rule_id}
                             </td>
                             <td className="py-3.5 px-4 text-xs font-semibold text-slate-400">
-                              {getEngineLabel(finding.source_type)}
+                              <div className="flex flex-wrap gap-1">
+                                {(finding.supporting_scanners || [finding.source_type]).map((sc: string) => {
+                                  const name = sc === 'pattern' || sc === 'entropy' || sc === 'secrets' ? 'Secrets' :
+                                               sc === 'semgrep' ? 'Semgrep' :
+                                               sc === 'trivy' ? 'Trivy' :
+                                               sc === 'codeql' ? 'CodeQL' : sc;
+                                  return (
+                                    <span key={sc} className="inline-flex items-center gap-0.5 rounded-full bg-slate-900 border border-slate-700/60 px-2 py-0.5 text-[10px] font-medium text-slate-300">
+                                      <span className="text-emerald-400 font-bold font-mono mr-0.5">✓</span> {name}
+                                    </span>
+                                  );
+                                })}
+                              </div>
                             </td>
                             <td className="py-3.5 px-4 font-mono text-xs text-slate-400 max-w-[250px] truncate" title={`${finding.file_path}:${finding.line_number}`}>
                               {finding.file_path}:{finding.line_number}
@@ -1000,6 +1015,36 @@ export default function RepoDetailPage() {
                                       </pre>
                                     </div>
 
+                                    {finding.code_flow && finding.code_flow.length > 0 && (
+                                      <div className="rounded-lg border border-accent-blue/15 bg-slate-950 p-4 space-y-3">
+                                        <span className="text-[10px] font-bold text-accent-blue uppercase tracking-wider block">
+                                          Semantic Data-Flow Path (CodeQL)
+                                        </span>
+                                        <div className="relative pl-5 border-l-2 border-slate-800 space-y-4">
+                                          {finding.code_flow.map((step: any, sIdx: number) => {
+                                            const isSource = sIdx === 0;
+                                            const isSink = sIdx === finding.code_flow.length - 1;
+                                            return (
+                                              <div key={sIdx} className="relative">
+                                                {/* Bullet dot */}
+                                                <span className={`absolute -left-[25px] top-1 h-2.5 w-2.5 rounded-full border ${
+                                                  isSource ? 'bg-blue-400 border-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.5)]' :
+                                                  isSink ? 'bg-red-400 border-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)] animate-pulse' :
+                                                  'bg-slate-700 border-slate-600'
+                                                }`} />
+                                                <div className="space-y-0.5">
+                                                  <div className="flex items-center gap-2">
+                                                    <span className="text-xs font-semibold text-white">{step.label}</span>
+                                                    <span className="text-[10px] font-mono text-slate-500">{step.file}:{step.line}</span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {finding.ai_suggested_fix && (
                                       <div className="rounded-lg border border-accent-blue/20 bg-accent-blue/5 p-3 space-y-1">
                                         <span className="inline-flex items-center gap-1 rounded bg-accent-blue/20 text-accent-blue text-[9px] font-bold px-1.5 py-0.5 uppercase tracking-wider">
@@ -1061,6 +1106,74 @@ export default function RepoDetailPage() {
           <span>Remove Repository profile</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+function parseBolds(text: string): React.ReactNode[] {
+  const parts = text.split(/\*\*([^*]+)\*\*/g);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      return <strong key={i} className="font-semibold text-white">{part}</strong>;
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+function MarkdownRenderer({ content }: { content: string }) {
+  if (!content) return null;
+
+  const lines = content.split('\n');
+
+  return (
+    <div className="space-y-4">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={idx} className="h-2" />;
+
+        if (trimmed.startsWith('###')) {
+          const text = trimmed.replace(/^###\s*/, '');
+          return <h4 key={idx} className="text-sm font-bold text-white mt-4 border-b border-border-dark pb-1">{parseBolds(text)}</h4>;
+        }
+        if (trimmed.startsWith('##')) {
+          const text = trimmed.replace(/^##\s*/, '');
+          return <h3 key={idx} className="text-base font-extrabold text-white mt-5">{parseBolds(text)}</h3>;
+        }
+        if (trimmed.startsWith('#')) {
+          const text = trimmed.replace(/^#\s*/, '');
+          return <h2 key={idx} className="text-lg font-black text-white mt-6">{parseBolds(text)}</h2>;
+        }
+
+        if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+          const text = trimmed.replace(/^[-*]\s*/, '');
+          return (
+            <div key={idx} className="flex items-start gap-2 text-sm text-slate-300 pl-4">
+              <span className="text-accent-blue mt-1.5 h-1.5 w-1.5 rounded-full bg-accent-blue shrink-0" />
+              <span>{parseBolds(text)}</span>
+            </div>
+          );
+        }
+
+        const numberedHeaderMatch = trimmed.match(/^(\d+)\.\s+\*\*(.+?)\*\*(.*)$/);
+        if (numberedHeaderMatch) {
+          const num = numberedHeaderMatch[1];
+          const title = numberedHeaderMatch[2];
+          const rest = numberedHeaderMatch[3];
+          return (
+            <div key={idx} className="space-y-2 mt-6">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2 border-b border-border-dark/60 pb-1.5 uppercase tracking-wider text-accent-blue">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent-blue/10 text-[10px] text-accent-blue border border-accent-blue/20">{num}</span>
+                {title}
+              </h3>
+              {rest.trim() && (
+                <p className="text-sm text-slate-300 leading-relaxed pl-7">{parseBolds(rest.trim())}</p>
+              )}
+            </div>
+          );
+        }
+
+        return <p key={idx} className="text-sm text-slate-300 leading-relaxed">{parseBolds(trimmed)}</p>;
+      })}
     </div>
   );
 }
