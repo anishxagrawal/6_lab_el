@@ -14,41 +14,46 @@ def calculate_confidence(finding: Dict[str, Any], repo_profile: Dict[str, Any]) 
     file_path = (finding.get("file_path") or "").lower()
     snippet = finding.get("snippet") or ""
 
-    # 1. Base score by engine type
-    if source_type == "codeql":
-        score = 85
+    # 1. Base score by engine agreement model (calculated rather than hardcoded)
+    scanners = set(finding.get("supporting_scanners", [source_type]))
+    has_pattern = "pattern" in scanners or "secrets" in scanners or "regex" in scanners
+    has_entropy = "entropy" in scanners
+    has_semgrep = "semgrep" in scanners
+    has_codeql = "codeql" in scanners
+    has_history = "history" in scanners or "git history" in scanners or finding.get("found_in") == "history"
+
+    if has_pattern and has_entropy and has_semgrep and has_history:
+        score = 100
+    elif has_pattern and has_entropy and has_semgrep:
+        score = 95
+    elif has_semgrep and has_codeql:
+        score = 98
+    elif has_codeql:
+        score = 90
+    elif has_semgrep:
+        score = 80
+    elif has_pattern or has_entropy:
+        score = 60
+    else:
+        score = 70
+
+    # Apply specific modifiers to reward high precision features
+    if has_codeql:
         precision = finding.get("precision", "high").lower()
         if precision == "high":
             score += 10
         elif precision == "medium":
             score += 5
-        
-        # Data flow presence boost
         if finding.get("code_flow"):
             score += 10
-    elif source_type in ["pattern", "secrets"]:
-        score = 80
-        # Check provider and formats
+
+    if has_pattern or has_entropy:
         provider = finding.get("provider")
         conf_level = finding.get("confidence")
         if provider and provider != "Generic":
             score += 15
-        if conf_level == "HIGH":
+        if conf_level == "HIGH" or conf_level == 5 or conf_level == "5":
             score += 5
-    elif source_type == "entropy":
-        score = 55  # Entropy defaults lower due to noise
-    elif source_type == "semgrep":
-        score = 75
-        # Check rule name for severity indication
-        rule_id = finding.get("rule_id", "").lower()
-        if "security" in rule_id or "crypto" in rule_id:
-            score += 10
-    elif source_type == "trivy":
-        score = 70
-        # If it's a dependency vulnerability, check if the library is direct in requirements/package.json
-        # Direct vs transitive checking
-        # repo_profile frameworks/packages could give us direct deps
-        # But if it's in the repo profile languages/frameworks context, it reinforces it
     
     # 2. Framework Validation (Rule 3)
     frameworks = [f.lower() for f in repo_profile.get("frameworks", [])]

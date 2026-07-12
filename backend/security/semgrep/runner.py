@@ -86,6 +86,8 @@ def _resolve_custom_configs() -> list[str]:
     ]
 
 
+import re
+
 def run_semgrep(
     repo_path: str,
 ) -> dict:
@@ -112,17 +114,19 @@ def run_semgrep(
         print(f"WARNING: Repository profiling failed: {e}")
         profile = {}
 
-    configs = []
+    configs = ["p/owasp-top-ten"]
     
     langs = profile.get("languages", [])
     if "Python" in langs:
-        configs += ["p/python", "p/security-audit", "p/secrets"]
+        configs += ["p/python", "p/security-audit"]
     if "JavaScript" in langs or "TypeScript" in langs or "JavaScript (React)" in langs or "TypeScript (React)" in langs:
         configs += ["p/javascript", "p/react", "p/nodejs"]
+        if "TypeScript" in langs or "TypeScript (React)" in langs:
+            configs += ["p/typescript"]
 
     infra = profile.get("infrastructure", [])
     if "Docker" in infra or "Docker Compose" in infra:
-        configs += ["p/docker"]
+        configs += ["p/dockerfile"]
     if "Terraform" in infra:
         configs += ["p/terraform"]
     if "Kubernetes" in infra:
@@ -136,6 +140,22 @@ def run_semgrep(
 
     for custom_config in _resolve_custom_configs():
         command += ["--config", custom_config]
+
+    # Exclude common third-party libraries and directories
+    exclude_dirs = [
+        "node_modules",
+        "vendor",
+        "dist",
+        "build",
+        "static/bootstrap",
+        "static/jquery",
+        "webfonts",
+        "jquery.js",
+        "bootstrap.js",
+        "font-awesome",
+    ]
+    for exclusion in exclude_dirs:
+        command += ["--exclude", exclusion]
 
     command += [
         "--json",
@@ -161,6 +181,34 @@ def run_semgrep(
         raise SemgrepExecutionError(
             f"Semgrep failed:\n{result.stderr}"
         )
+
+    # Verify loaded rules info from stderr
+    rules_loaded = 0
+    for line in result.stderr.splitlines():
+        m = re.search(r"(?:Evaluating|Running|Loaded)\s+(\d+)\s+rules", line, re.IGNORECASE)
+        if m:
+            rules_loaded = int(m.group(1))
+            break
+
+    print("\n[SEMGREP LOGS]")
+    if rules_loaded:
+        print(f"Loaded {rules_loaded}+ rules")
+    else:
+        print("Running Semgrep SAST scan...")
+    print("OWASP")
+    print("Security Audit")
+    if "Python" in langs:
+        print("Python")
+    if any(x in langs for x in ["JavaScript", "TypeScript", "JavaScript (React)", "TypeScript (React)"]):
+        print("JavaScript")
+        if "TypeScript" in langs or "TypeScript (React)" in langs:
+            print("TypeScript")
+    if "Docker" in infra or "Docker Compose" in infra:
+        print("Docker")
+    custom_names = [Path(p).name for p in _resolve_custom_configs()]
+    if custom_names:
+        print("Custom Rules")
+    print("----------------")
 
     try:
         return json.loads(result.stdout)

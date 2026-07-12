@@ -187,6 +187,19 @@ def _supabase_for_request(request: Request | None) -> Client:
 
     return supabase
 
+
+def _sanitize_null_bytes_in_place(data: Any) -> None:
+    if isinstance(data, dict):
+        for k, v in list(data.items()):
+            if isinstance(v, str):
+                data[k] = v.replace("\x00", "").replace("\u0000", "")
+            elif isinstance(v, (dict, list)):
+                _sanitize_null_bytes_in_place(v)
+    elif isinstance(data, list):
+        for item in data:
+            _sanitize_null_bytes_in_place(item)
+
+
 def _severity_rank(severity: str) -> int:
     mapping = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
     return mapping.get(severity.upper(), 1)
@@ -602,6 +615,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         + trivy_findings
         + codeql_findings
     )
+    _sanitize_null_bytes_in_place(all_findings)
 
     # AI-powered remediation suggestions (Phase 6): bounded to the top 10
     # CRITICAL/HIGH Semgrep findings only. Deliberately excludes raw
@@ -636,7 +650,7 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
     for finding in unique_findings:
         finding["cluster_id"] = None
 
-    if unique_findings:
+    if all_findings:
         print("DB: Saving findings to database...")
         while True:
             try:
@@ -672,7 +686,11 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
             "line_number": f["line"],
             "snippet": f["code_snippet"],
             "secret_hash": f["id"],
-            "cluster_repo_count": _distinct_repo_count_for_hash(client, f["id"])
+            "cluster_repo_count": _distinct_repo_count_for_hash(client, f["id"]),
+            "vulnerability_description": f.get("description"),
+            "confidence": f.get("confidence"),
+            "supporting_scanners": f.get("supporting_scanners"),
+            "engines": f.get("engines")
         })
 
     print("AI: Generating AI reasoning...")

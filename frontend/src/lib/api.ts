@@ -95,6 +95,14 @@ export interface ValidatedFinding {
   recommendation: string;
   supporting_scanners?: string[];
   code_flow?: { file: string; line: number; label: string }[];
+  engines?: {
+    name: string;
+    type: string;
+    rule: string;
+    query?: string;
+    severity: string;
+  }[];
+  line_range?: string;
 }
 
 export interface ValidatedFindingsDataset {

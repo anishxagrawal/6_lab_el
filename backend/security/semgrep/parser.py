@@ -131,6 +131,20 @@ def parse_semgrep_results(
             "unknown-rule",
         )
 
+        code_snippet = extract_code_snippet(result)
+        is_secret_rule = any(x in rule_id.lower() for x in ["secret", "password", "token", "jwt", "key", "credential"])
+        if is_secret_rule:
+            snippet_lower = code_snippet.lower()
+            false_positive_indicators = [
+                "graphene.string", "graphene.field", "graphene.argument",
+                "charfield", "textfield", "integerfield", "booleanfield",
+                "schema.string", "schema.char", "=models.", "=schema.",
+                "serializer", "field(", "string(", "types.string",
+                "dynamicfield", "db.string", "db.varchar"
+            ]
+            if any(indicator in snippet_lower for indicator in false_positive_indicators):
+                continue
+
         message = extract_message(
             result
         )
@@ -179,9 +193,7 @@ def parse_semgrep_results(
                 owasp_category
             ),
 
-            code_snippet=extract_code_snippet(
-                result
-            ),
+            code_snippet=code_snippet,
         )
 
         findings.append(

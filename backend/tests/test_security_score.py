@@ -69,10 +69,10 @@ def test_score_is_100_with_no_findings(monkeypatch):
 
 def test_score_deducts_by_severity(monkeypatch):
     findings = (
-        [{"severity": "CRITICAL", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}"} for i in range(2)]
-        + [{"severity": "HIGH", "file_path": "src/data_2.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_2"}]
-        + [{"severity": "MEDIUM", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}"} for i in range(3, 6)]
-        + [{"severity": "LOW", "file_path": "src/data_6.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_6"}]
+        [{"severity": "CRITICAL", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}", "provider": "AWS", "confidence": "HIGH"} for i in range(2)]
+        + [{"severity": "HIGH", "file_path": "src/data_2.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_2", "provider": "AWS", "confidence": "HIGH"}]
+        + [{"severity": "MEDIUM", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}", "provider": "AWS", "confidence": "HIGH"} for i in range(3, 6)]
+        + [{"severity": "LOW", "file_path": "src/data_6.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_6", "provider": "AWS", "confidence": "HIGH"}]
     )
     monkeypatch.setattr(main, "supabase", _FakeClient([FAKE_REPO_ROW], findings))
 
@@ -86,7 +86,7 @@ def test_score_deducts_by_severity(monkeypatch):
 
 
 def test_score_floors_at_zero_with_many_criticals(monkeypatch):
-    findings = [{"severity": "CRITICAL", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}"} for i in range(20)]
+    findings = [{"severity": "CRITICAL", "file_path": f"src/data_{i}.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": f"hash_{i}", "provider": "AWS", "confidence": "HIGH"} for i in range(20)]
     monkeypatch.setattr(main, "supabase", _FakeClient([FAKE_REPO_ROW], findings))
 
     response = client.get(f"/repos/{REPO_ID}/score")
@@ -97,8 +97,8 @@ def test_score_floors_at_zero_with_many_criticals(monkeypatch):
 
 def test_score_ignores_unrecognized_severity_but_treats_missing_as_low(monkeypatch):
     findings = [
-        {"severity": "WEIRD", "file_path": "src/data_1.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_1"},
-        {"severity": None, "file_path": "src/data_2.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_2"}
+        {"severity": "WEIRD", "file_path": "src/data_1.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_1", "provider": "AWS", "confidence": "HIGH"},
+        {"severity": None, "file_path": "src/data_2.txt", "snippet": "API_KEY = 'a1b2c3d4e5f6g7h8i9j0'", "source_type": "secrets", "secret_hash": "hash_2", "provider": "AWS", "confidence": "HIGH"}
     ]
     monkeypatch.setattr(main, "supabase", _FakeClient([FAKE_REPO_ROW], findings))
 

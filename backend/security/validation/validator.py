@@ -150,7 +150,9 @@ def run_validation_pipeline(
             "occurrences": f.get("occurrences", []),
             "recommendation": f.get("recommendation") or "Remediate exposed credential or update config.",
             "supporting_scanners": f.get("supporting_scanners", [f.get("source_type", "secrets")]),
-            "code_flow": f.get("code_flow", [])
+            "code_flow": f.get("code_flow", []),
+            "engines": f.get("engines", []),
+            "line_range": f.get("line_range", str(f.get("line_number", 0)))
         })
 
     return {

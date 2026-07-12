@@ -261,6 +261,35 @@ export default function RepoDetailPage() {
     }];
   }, [scoreData]);
 
+  // Evolve engine contributions statistics
+  const engineStats = useMemo(() => {
+    let secrets = 0;
+    let semgrep = 0;
+    let codeql = 0;
+    let trivy = 0;
+    let history = 0;
+    
+    findings.forEach(f => {
+      const scanners = f.supporting_scanners || [f.scanner];
+      scanners.forEach((sc: string) => {
+        const name = String(sc).toLowerCase();
+        if (name === 'pattern' || name === 'entropy' || name === 'secrets') {
+          secrets += 1;
+        } else if (name === 'semgrep') {
+          semgrep += 1;
+        } else if (name === 'codeql') {
+          codeql += 1;
+        } else if (name === 'trivy') {
+          trivy += 1;
+        } else if (name === 'history') {
+          history += 1;
+        }
+      });
+    });
+    
+    return { secrets, semgrep, codeql, trivy, history };
+  }, [findings]);
+
   // Filtering findings
   const filteredFindings = useMemo(() => {
     let result = [...findings];
@@ -538,7 +567,7 @@ export default function RepoDetailPage() {
           </div>
 
           {/* Validation Details & Root Causes */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             {/* Confidence Distribution */}
             <div className="rounded-xl border border-border-dark bg-panel p-6 space-y-4">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Confidence Distribution</h3>
@@ -569,6 +598,41 @@ export default function RepoDetailPage() {
                   <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
                     <div className="bg-slate-600 h-full" style={{ width: `${dataset?.raw_count ? ((dataset.rejected_count / dataset.raw_count) * 100) : 0}%` }} />
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Engine Contributions */}
+            <div className="rounded-xl border border-border-dark bg-panel p-6 space-y-4">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Engine Contributions</h3>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between border-b border-border-dark/30 pb-1">
+                  <span className="text-slate-400">Secret Engine:</span>
+                  <strong className="text-white font-mono">{engineStats.secrets}</strong>
+                </div>
+                <div className="flex justify-between border-b border-border-dark/30 pb-1">
+                  <span className="text-slate-400">Semgrep:</span>
+                  <strong className="text-white font-mono">{engineStats.semgrep}</strong>
+                </div>
+                <div className="flex justify-between border-b border-border-dark/30 pb-1">
+                  <span className="text-slate-400">CodeQL:</span>
+                  <strong className="text-white font-mono">{engineStats.codeql}</strong>
+                </div>
+                <div className="flex justify-between border-b border-border-dark/30 pb-1">
+                  <span className="text-slate-400">Trivy:</span>
+                  <strong className="text-white font-mono">{engineStats.trivy}</strong>
+                </div>
+                <div className="flex justify-between border-b border-border-dark/30 pb-1">
+                  <span className="text-slate-400">Git History:</span>
+                  <strong className="text-white font-mono">{engineStats.history}</strong>
+                </div>
+                <div className="flex justify-between pt-1 border-t border-slate-700/60 font-semibold">
+                  <span className="text-slate-300">Merged Findings:</span>
+                  <strong className="text-emerald-400 font-mono">{findings.length}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-300">Raw Findings:</span>
+                  <strong className="text-slate-400 font-mono">{dataset?.raw_count ?? 0}</strong>
                 </div>
               </div>
             </div>
@@ -899,8 +963,8 @@ export default function RepoDetailPage() {
                                 })}
                               </div>
                             </td>
-                            <td className="py-3.5 px-4 font-mono text-xs text-slate-400 max-w-[250px] truncate" title={`${finding.file_path}:${finding.line_number}`}>
-                              {finding.file_path}:{finding.line_number}
+                            <td className="py-3.5 px-4 font-mono text-xs text-slate-400 max-w-[250px] truncate" title={`${finding.file_path}:${finding.line_range || finding.line_number}`}>
+                              {finding.file_path}:{finding.line_range || finding.line_number}
                               {finding.occurrences.length > 1 && (
                                 <span className="ml-2 inline-flex items-center rounded-full bg-slate-800 text-[10px] font-semibold text-slate-300 border border-slate-700 px-1.5 py-0.5">
                                   + {finding.occurrences.length - 1} more
@@ -933,6 +997,28 @@ export default function RepoDetailPage() {
                                           <span className="text-xs text-slate-400 font-sans">
                                             Confidence Score: <strong className="text-slate-200 font-mono">{finding.confidence}/100</strong>
                                           </span>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {finding.engines && finding.engines.length > 0 && (
+                                      <div className="space-y-2">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Detection Engines</span>
+                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                          {finding.engines.map((eng: any, eIdx: number) => (
+                                            <div key={eIdx} className="bg-slate-950/60 rounded border border-border-dark/40 p-2.5 text-xs">
+                                              <div className="flex items-center justify-between">
+                                                <span className="font-semibold text-white flex items-center gap-1">
+                                                  <span className="text-emerald-400 font-bold font-mono">✓</span> {eng.name}
+                                                </span>
+                                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider bg-slate-900 border border-slate-700/60 px-1 py-0.5 rounded">
+                                                  {eng.severity}
+                                                </span>
+                                              </div>
+                                              <p className="text-slate-400 text-[10px] mt-0.5">{eng.type}</p>
+                                              <p className="font-mono text-[9px] text-slate-500 mt-1 truncate" title={eng.rule}>Rule: {eng.rule}</p>
+                                            </div>
+                                          ))}
                                         </div>
                                       </div>
                                     )}

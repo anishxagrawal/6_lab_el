@@ -93,8 +93,10 @@ def build_reasoning(
             desc = desc.strip()
             if len(desc) > 80:
                 desc = desc[:77] + "..."
+            engines_list = f.get("engines") or []
+            engines_desc = ", ".join(f"{eng.get('name')} ({eng.get('severity')})" for eng in engines_list if eng) if engines_list else f.get("severity")
             details_lines.append(
-                f"  * [{f.get('severity')}] {f.get('secret_type')} in `{f.get('file_path')}:{f.get('line_number')}` ({desc})"
+                f"  * {f.get('secret_type')} in `{f.get('file_path')}:{f.get('line_number')}` | Confidence: {f.get('confidence')}% | Detected by: [{engines_desc}] ({desc})"
             )
 
     findings_details = "\n".join(details_lines[:10])
