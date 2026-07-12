@@ -100,6 +100,11 @@ class SemgrepService:
             )
         )
 
+        import os
+        for finding in analysis.findings:
+            if os.path.isabs(finding.file_path):
+                finding.file_path = os.path.relpath(finding.file_path, repo_path).replace("\\", "/")
+
         records = (
             semgrep_findings_to_records(
                 repo_id,

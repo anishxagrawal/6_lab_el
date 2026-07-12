@@ -86,15 +86,35 @@ def build_reasoning(
         }
     )
 
+    # Deduplicate findings by secret_hash for the prompt to keep it concise and descriptive
+    unique_hashes = set()
+    details_lines = []
+    for f in findings:
+        h = f.get("secret_hash")
+        if h not in unique_hashes:
+            unique_hashes.add(h)
+            desc = f.get("vulnerability_description") or f.get("snippet") or ""
+            desc = desc.strip()
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            details_lines.append(
+                f"  * [{f.get('severity')}] {f.get('secret_type')} in `{f.get('file_path')}:{f.get('line_number')}` ({desc})"
+            )
+
+    findings_details = "\n".join(details_lines[:10])
+
     prompt = (
-        f"GitHub repo {owner}/{name} scan:\n"
-        f"- Total secrets exposed: {len(findings)}\n"
-        f"- Critical severity: {critical_count}\n"
-        f"- Types: {breakdown}\n"
-        f"- Also leaked in other monitored repos: {cross_repo}\n\n"
-        "What is the risk level, "
-        "what are the most urgent actions, "
-        "and what does cross-repo leakage imply?"
+        f"GitHub repo {owner}/{name} scan summary:\n"
+        f"- Total findings exposed: {len(findings)}\n"
+        f"- Critical severity count: {critical_count}\n"
+        f"- Type breakdown: {breakdown}\n"
+        f"- Leaked in other monitored repos (cross-repo reuse): {cross_repo}\n\n"
+        f"Specific key findings details (up to 10 unique items):\n"
+        f"{findings_details}\n\n"
+        "Provide a high-quality, professional security analysis summary. "
+        "Mention specific files and categories in your answer (e.g. 'A critical Generic API Key is leaked in public/index.html'). "
+        "Answer the following: What is the specific risk profile of this repository, what are the most urgent remediation actions, "
+        "and what does the cross-repo leakage imply?"
     )
 
     if groq_client is None:

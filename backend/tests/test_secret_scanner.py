@@ -68,6 +68,7 @@ SKIP_EXT = {
     ".map",
     ".exe",
     ".bin",
+    ".wasm",
 }
 
 
@@ -79,6 +80,10 @@ def should_skip_file(
         return True
 
     lowered = path.lower()
+
+    # Skip ZK verification key files which only contain public cryptographic parameters
+    if "vkey" in lowered or "verification_key" in lowered:
+        return True
 
     if any(lock in lowered for lock in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "composer.lock"]):
         return True
@@ -239,36 +244,44 @@ async def scan_file(
             # overlap a span already reported by a pattern match on this line,
             # so the same secret isn't reported twice under two detection
             # methods.
-            for hit in find_high_entropy_tokens(line):
-                token_start = hit["start"]
-                token_end = token_start + len(str(hit["token"]))
+            # Skip entropy checks on test files, documentation, and config files to reduce false positive noise.
+            is_test_or_doc = (
+                "test" in lowered 
+                or lowered.endswith(".md") 
+                or lowered.endswith(".txt")
+                or lowered.endswith(".json")
+            )
+            if not is_test_or_doc:
+                for hit in find_high_entropy_tokens(line):
+                    token_start = hit["start"]
+                    token_end = token_start + len(str(hit["token"]))
 
-                overlaps_existing_match = any(
-                    token_start < span_end and token_end > span_start
-                    for span_start, span_end in matched_spans
-                )
-                if overlaps_existing_match:
-                    continue
-
-                findings.append(
-                    _build_finding(
-                        repo_id=repo_id,
-                        file_path=file_path,
-                        line_number=line_number,
-                        secret_type="High-Entropy String",
-                        severity="MEDIUM",
-                        line=line,
-                        secret_value=str(hit["token"]),
-                        detection_method="entropy",
-                        entropy_score=hit["entropy"],
-                        hash_secret=hash_secret,
-                        encrypt_snippet=encrypt_snippet,
-                        calculate_exposure_score=calculate_exposure_score,
-                        hmac_secret_key=hmac_secret_key,
-                        first_commit_date=first_commit_date,
-                        exposure_days=exposure_days,
+                    overlaps_existing_match = any(
+                        token_start < span_end and token_end > span_start
+                        for span_start, span_end in matched_spans
                     )
-                )
+                    if overlaps_existing_match:
+                        continue
+
+                    findings.append(
+                        _build_finding(
+                            repo_id=repo_id,
+                            file_path=file_path,
+                            line_number=line_number,
+                            secret_type="High-Entropy String",
+                            severity="MEDIUM",
+                            line=line,
+                            secret_value=str(hit["token"]),
+                            detection_method="entropy",
+                            entropy_score=hit["entropy"],
+                            hash_secret=hash_secret,
+                            encrypt_snippet=encrypt_snippet,
+                            calculate_exposure_score=calculate_exposure_score,
+                            hmac_secret_key=hmac_secret_key,
+                            first_commit_date=first_commit_date,
+                            exposure_days=exposure_days,
+                        )
+                    )
 
     except Exception as e:
 

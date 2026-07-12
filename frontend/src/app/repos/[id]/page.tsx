@@ -266,6 +266,29 @@ export default function RepoDetailPage() {
     return result;
   }, [findings, sourceFilter, severityFilter, sortBy]);
 
+  // Group findings by secret_hash + secret_type to collapse duplicate leaks
+  const groupedFindings = useMemo(() => {
+    const groups: Record<string, any> = {};
+
+    for (const f of filteredFindings) {
+      const key = `${f.secret_hash}-${f.secret_type}`;
+      if (!groups[key]) {
+        groups[key] = {
+          ...f,
+          occurrences: []
+        };
+      }
+      groups[key].occurrences.push({
+        file_path: f.file_path,
+        line_number: f.line_number,
+        found_in: f.found_in,
+        commit_hash: f.commit_hash
+      });
+    }
+
+    return Object.values(groups);
+  }, [filteredFindings]);
+
   // Check if there's any cross-repo cluster leaks warning
   const clusterLeakCount = useMemo(() => {
     return findings.filter(f => f.cluster_id !== null).length;
@@ -639,7 +662,7 @@ export default function RepoDetailPage() {
           {/* 6. Findings Table */}
           <div className="space-y-4">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <h2 className="text-xl font-bold text-white">Scanned Findings ({filteredFindings.length})</h2>
+              <h2 className="text-xl font-bold text-white">Scanned Findings ({groupedFindings.length} unique, {filteredFindings.length} total)</h2>
               
               {/* Filter controls */}
               <div className="flex flex-wrap items-center gap-3">
@@ -716,8 +739,8 @@ export default function RepoDetailPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border-dark/60 text-sm text-slate-300">
-                    {filteredFindings.map((finding, idx) => {
-                      const rowKey = `${finding.file_path}-${finding.line_number}-${finding.secret_hash}-${idx}`;
+                    {groupedFindings.map((finding, idx) => {
+                      const rowKey = finding.secret_hash;
                       const isExpanded = !!expandedFindings[rowKey];
                       
                       const getSeverityColor = (sev: string) => {
@@ -769,8 +792,13 @@ export default function RepoDetailPage() {
                             <td className="py-3.5 px-4 text-xs font-semibold text-slate-400">
                               {getEngineLabel(finding.source_type)}
                             </td>
-                            <td className="py-3.5 px-4 font-mono text-xs text-slate-400 max-w-[200px] truncate" title={finding.file_path}>
+                            <td className="py-3.5 px-4 font-mono text-xs text-slate-400 max-w-[250px] truncate" title={`${finding.file_path}:${finding.line_number}`}>
                               {finding.file_path}:{finding.line_number}
+                              {finding.occurrences.length > 1 && (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-slate-800 text-[10px] font-semibold text-slate-300 border border-slate-700 px-1.5 py-0.5">
+                                  + {finding.occurrences.length - 1} more
+                                </span>
+                              )}
                             </td>
                             <td className="py-3.5 px-4">
                               <span className="font-mono text-xs text-slate-300 font-bold bg-slate-800/40 border border-slate-700/60 px-1.5 py-0.5 rounded">
@@ -785,7 +813,7 @@ export default function RepoDetailPage() {
                               <td colSpan={6} className="py-5 px-6 space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                   {/* Left details */}
-                                  <div className="space-y-3">
+                                  <div className="space-y-4">
                                     {finding.owasp_category && (
                                       <div>
                                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">OWASP Top 10 Category</span>
@@ -794,6 +822,29 @@ export default function RepoDetailPage() {
                                         </span>
                                       </div>
                                     )}
+
+                                    {/* Scan Locations list */}
+                                    <div>
+                                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Scan Locations ({finding.occurrences.length})</span>
+                                      <ul className="mt-1.5 space-y-1.5 max-h-36 overflow-y-auto pr-2">
+                                        {finding.occurrences.map((occ: any, oIdx: number) => (
+                                          <li key={occ.id || oIdx} className="text-xs font-mono flex items-center justify-between bg-slate-950 px-2 py-1.5 rounded border border-border-dark/40">
+                                            <span className="text-slate-300 truncate max-w-[280px]" title={occ.file_path}>
+                                              {occ.file_path}:{occ.line_number}
+                                            </span>
+                                            {occ.found_in === 'history' ? (
+                                              <span className="text-[9px] font-bold text-violet-400 bg-violet-500/10 border border-violet-500/25 rounded px-1.5 py-0.5" title={occ.commit_hash}>
+                                                history ({occ.commit_hash?.slice(0, 7)})
+                                              </span>
+                                            ) : (
+                                              <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 rounded px-1.5 py-0.5">
+                                                active
+                                              </span>
+                                            )}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
 
                                     {finding.found_in === 'history' && (
                                       <div>

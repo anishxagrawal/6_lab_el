@@ -177,38 +177,49 @@ def scan_git_history(
 
         # Entropy pass: same overlap-skip logic as secret_scanner.scan_file,
         # so a secret already caught by a named pattern isn't double-reported.
-        for hit in find_high_entropy_tokens(added_content):
-            token = str(hit["token"])
-            token_start = hit["start"]
-            token_end = token_start + len(token)
+        # Skip entropy checks on test files, documentation, and config files to reduce false positive noise.
+        lowered_file = current_file.lower()
+        is_test_or_doc = (
+            "test" in lowered_file 
+            or lowered_file.endswith(".md") 
+            or lowered_file.endswith(".txt")
+            or lowered_file.endswith(".json")
+            or "vkey" in lowered_file
+            or "verification_key" in lowered_file
+        )
+        if not is_test_or_doc:
+            for hit in find_high_entropy_tokens(added_content):
+                token = str(hit["token"])
+                token_start = hit["start"]
+                token_end = token_start + len(token)
 
-            overlaps_existing_match = any(
-                token_start < span_end and token_end > span_start
-                for span_start, span_end in matched_spans
-            )
-            if overlaps_existing_match:
-                continue
-
-            secret_hash = hash_secret(token, hmac_secret_key)
-            dedup_key = f"{current_file}:{secret_hash}"
-            if dedup_key in seen_secret_keys:
-                continue
-            seen_secret_keys.add(dedup_key)
-
-            findings.append(
-                _build_history_finding(
-                    repo_id=repo_id,
-                    file_path=current_file,
-                    commit_hash=current_commit,
-                    secret_type="High-Entropy String",
-                    severity="MEDIUM",
-                    line_content=added_content,
-                    secret_value=token,
-                    detection_method="entropy",
-                    entropy_score=hit["entropy"],
-                    secret_hash=secret_hash,
-                    encrypt_snippet=encrypt_snippet,
+                overlaps_existing_match = any(
+                    token_start < span_end and token_end > span_start
+                    for span_start, span_end in matched_spans
                 )
-            )
+                if overlaps_existing_match:
+                    continue
+
+                secret_hash = hash_secret(token, hmac_secret_key)
+                dedup_key = f"{current_file}:{secret_hash}"
+                if dedup_key in seen_secret_keys:
+                    continue
+                seen_secret_keys.add(dedup_key)
+
+                findings.append(
+                    _build_history_finding(
+                        repo_id=repo_id,
+                        file_path=current_file,
+                        commit_hash=current_commit,
+                        secret_type="High-Entropy String",
+                        severity="MEDIUM",
+                        line_content=added_content,
+                        secret_value=token,
+                        detection_method="entropy",
+                        entropy_score=hit["entropy"],
+                        secret_hash=secret_hash,
+                        encrypt_snippet=encrypt_snippet,
+                    )
+                )
 
     return findings
