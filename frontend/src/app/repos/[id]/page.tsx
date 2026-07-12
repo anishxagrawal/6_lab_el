@@ -40,7 +40,8 @@ export default function RepoDetailPage() {
   const id = params.id as string;
 
   const [repo, setRepo] = useState<Repo | null>(null);
-  const [findings, setFindings] = useState<Finding[]>([]);
+  const [findings, setFindings] = useState<any[]>([]);
+  const [dataset, setDataset] = useState<any | null>(null);
   const [scoreData, setScoreData] = useState<ScoreResponse | null>(null);
   
   // Loading & Scanning States
@@ -81,8 +82,33 @@ export default function RepoDetailPage() {
       setRepo(currentRepo);
 
       // 2. Fetch findings
-      const findingsList = await api.getFindings(id);
-      setFindings(findingsList);
+      const findingsDataset = await api.getFindings(id);
+      setDataset(findingsDataset);
+
+      const mappedFindings = findingsDataset.findings.map((f: any) => ({
+        file_path: f.file,
+        line_number: f.line,
+        snippet: f.code_snippet,
+        secret_hash: f.id,
+        secret_type: f.title,
+        severity: f.severity,
+        cluster_id: null,
+        source_type: f.scanner === 'secrets' ? 'pattern' : f.scanner,
+        rule_id: f.scanner_rule,
+        rule_name: f.title,
+        owasp_category: f.owasp,
+        vulnerability_description: f.description,
+        recommendation: f.recommendation,
+        status: f.status,
+        confidence: f.confidence,
+        occurrences: f.occurrences.map((o: any) => ({
+          file_path: o.file_path,
+          line_number: o.line_number,
+          found_in: o.found_in,
+          commit_hash: o.commit_hash
+        }))
+      }));
+      setFindings(mappedFindings);
 
       // 3. Fetch security score
       const scoreRes = await api.getScore(id);
@@ -90,13 +116,13 @@ export default function RepoDetailPage() {
 
       // 4. Initialize report JSON from existing values if status is complete
       if (currentRepo.status === 'done') {
-        const critCount = findingsList.filter(f => f.severity === 'CRITICAL').length;
+        const critCount = findingsDataset.findings.filter((f: any) => f.severity === 'CRITICAL').length;
         const payload: ReportPayload = {
           repo_id: currentRepo.id,
           owner: currentRepo.owner,
           name: currentRepo.name,
           github_url: currentRepo.github_url,
-          total_findings: currentRepo.finding_count,
+          total_findings: findingsDataset.validated_count,
           critical_findings: critCount,
           generated_at: currentRepo.last_scanned_at || new Date().toISOString()
         };
@@ -275,15 +301,14 @@ export default function RepoDetailPage() {
       if (!groups[key]) {
         groups[key] = {
           ...f,
-          occurrences: []
+          occurrences: f.occurrences && f.occurrences.length > 0 ? f.occurrences : [{
+            file_path: f.file_path,
+            line_number: f.line_number,
+            found_in: f.found_in,
+            commit_hash: f.commit_hash
+          }]
         };
       }
-      groups[key].occurrences.push({
-        file_path: f.file_path,
-        line_number: f.line_number,
-        found_in: f.found_in,
-        commit_hash: f.commit_hash
-      });
     }
 
     return Object.values(groups);
@@ -291,8 +316,8 @@ export default function RepoDetailPage() {
 
   // Check if there's any cross-repo cluster leaks warning
   const clusterLeakCount = useMemo(() => {
-    return findings.filter(f => f.cluster_id !== null).length;
-  }, [findings]);
+    return dataset?.clusters?.length ?? 0;
+  }, [dataset]);
 
   if (isLoading) {
     return (
@@ -459,9 +484,14 @@ export default function RepoDetailPage() {
 
             {/* Metrics Breakdown Bar Chart */}
             <div className="md:col-span-8 rounded-xl border border-border-dark bg-panel p-6 flex flex-col justify-between min-h-[260px]">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Severity Breakdown</h3>
-                <span className="text-xs text-slate-500">Total Findings: {repo.finding_count}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Severity Breakdown (Validated)</h3>
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                  <span>Raw: <strong className="text-slate-300 font-mono">{dataset?.raw_count ?? 0}</strong></span>
+                  <span>Validated: <strong className="text-emerald-400 font-mono">{dataset?.validated_count ?? 0}</strong></span>
+                  <span>Needs Review: <strong className="text-amber-400 font-mono">{dataset?.needs_review_count ?? 0}</strong></span>
+                  <span>Rejected: <strong className="text-slate-400 font-mono">{dataset?.rejected_count ?? 0}</strong></span>
+                </div>
               </div>
 
               {/* Bar Stack representation */}
@@ -503,6 +533,68 @@ export default function RepoDetailPage() {
               </div>
             </div>
 
+          </div>
+
+          {/* Validation Details & Root Causes */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Confidence Distribution */}
+            <div className="rounded-xl border border-border-dark bg-panel p-6 space-y-4">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Confidence Distribution</h3>
+              <div className="space-y-3.5">
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-emerald-400 font-semibold">Validated (High)</span>
+                    <span className="text-slate-300 font-mono">{dataset?.validated_count ?? 0}</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div className="bg-emerald-500 h-full" style={{ width: `${dataset?.raw_count ? ((dataset.validated_count / dataset.raw_count) * 100) : 0}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-amber-400 font-semibold">Needs Review (Medium)</span>
+                    <span className="text-slate-300 font-mono">{dataset?.needs_review_count ?? 0}</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div className="bg-amber-500 h-full" style={{ width: `${dataset?.raw_count ? ((dataset.needs_review_count / dataset.raw_count) * 100) : 0}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-400 font-semibold">Rejected (Low / Ignored)</span>
+                    <span className="text-slate-300 font-mono">{dataset?.rejected_count ?? 0}</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div className="bg-slate-600 h-full" style={{ width: `${dataset?.raw_count ? ((dataset.rejected_count / dataset.raw_count) * 100) : 0}%` }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Root Cause Clusters */}
+            <div className="md:col-span-2 rounded-xl border border-border-dark bg-panel p-6 space-y-4">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Root Cause Analysis</h3>
+              {dataset?.clusters && dataset.clusters.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {dataset.clusters.map((c: any) => (
+                    <div key={c.root_cause} className="border border-border-dark/60 bg-panel-dark/45 rounded-lg p-3.5 space-y-1">
+                      <div className="flex justify-between items-start">
+                        <h4 className="text-xs font-bold text-white leading-tight">{c.root_cause}</h4>
+                        <span className="text-[10px] font-bold uppercase bg-blue-900/35 text-blue-400 px-1.5 py-0.5 rounded font-mono shrink-0">
+                          {c.findings_count} {c.findings_count === 1 ? 'type' : 'types'}
+                        </span>
+                      </div>
+                      <div className="flex gap-3 text-[11px] text-slate-400 pt-1 font-sans">
+                        <span>Occurrences: <strong className="text-slate-300 font-mono">{c.occurrences_count}</strong></span>
+                        <span>Affected Files: <strong className="text-slate-300 font-mono">{c.affected_files_count}</strong></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-slate-500 text-xs text-center py-6">No validated root causes identified.</div>
+              )}
+            </div>
           </div>
 
           {/* 3. AI Risk Summary Card */}
@@ -814,6 +906,22 @@ export default function RepoDetailPage() {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                   {/* Left details */}
                                   <div className="space-y-4">
+                                    {finding.status && (
+                                      <div>
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Validation Status</span>
+                                        <div className="flex items-center gap-2 mt-1">
+                                          <span className={`inline-flex rounded text-[10px] font-bold px-2 py-0.5 ${
+                                            finding.status === 'VALIDATED' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                          }`}>
+                                            {finding.status}
+                                          </span>
+                                          <span className="text-xs text-slate-400 font-sans">
+                                            Confidence Score: <strong className="text-slate-200 font-mono">{finding.confidence}/100</strong>
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {finding.owasp_category && (
                                       <div>
                                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">OWASP Top 10 Category</span>

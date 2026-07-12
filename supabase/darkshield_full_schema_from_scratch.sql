@@ -55,6 +55,7 @@ create table public.repos (
   finding_count    int not null default 0,
   ai_reasoning     text,
   report_signature text,
+  repo_profile     jsonb,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
   unique (user_id, github_url),

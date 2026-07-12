@@ -75,6 +75,37 @@ export interface Finding {
   detection_method: string | null;
 }
 
+export interface ValidatedFinding {
+  id: string;
+  scanner: string;
+  scanner_rule: string;
+  status: 'VALIDATED' | 'NEEDS_REVIEW' | 'REJECTED';
+  confidence: number;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  title: string;
+  description: string;
+  evidence: string;
+  code_snippet: string;
+  file: string;
+  line: number;
+  owasp?: string;
+  cwe?: string;
+  root_cause: string;
+  occurrences: any[];
+  recommendation: string;
+}
+
+export interface ValidatedFindingsDataset {
+  repo_id: string;
+  raw_count: number;
+  validated_count: number;
+  needs_review_count: number;
+  rejected_count: number;
+  security_score: number;
+  findings: ValidatedFinding[];
+  clusters: any[];
+}
+
 export interface ScoreResponse {
   repo_id: string;
   security_score: number;
@@ -155,7 +186,7 @@ export const api = {
       // Scan can take a while, Next.js fetch defaults to no timeout but browser fetch respects this
     }),
     
-  getFindings: (repoId: string) => request<Finding[]>(`/findings/${repoId}`),
+  getFindings: (repoId: string) => request<ValidatedFindingsDataset>(`/findings/${repoId}`),
   
   getScore: (repoId: string) => request<ScoreResponse>(`/repos/${repoId}/score`),
   

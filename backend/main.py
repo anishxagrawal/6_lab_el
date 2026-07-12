@@ -639,15 +639,25 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                 raise exc
         print("OK: Findings saved")
 
+    from security.validation.validator import run_validation_pipeline
+    validation_dataset = run_validation_pipeline(req.repo_id, unique_findings, repo_profile)
+
     findings_for_reasoning: list[dict[str, Any]] = []
-    for finding in unique_findings:
-        finding["cluster_repo_count"] = _distinct_repo_count_for_hash(client, finding["secret_hash"])
-        findings_for_reasoning.append(finding)
+    for f in validation_dataset["findings"]:
+        findings_for_reasoning.append({
+            "secret_type": f["title"],
+            "severity": f["severity"],
+            "file_path": f["file"],
+            "line_number": f["line"],
+            "snippet": f["code_snippet"],
+            "secret_hash": f["id"],
+            "cluster_repo_count": _distinct_repo_count_for_hash(client, f["id"])
+        })
 
     print("AI: Generating AI reasoning...")
     ai_reasoning = build_reasoning(owner, name, findings_for_reasoning, groq_client, repo_profile=repo_profile)
-    critical_findings = [finding for finding in unique_findings if str(finding.get("severity") or "").upper() == "CRITICAL"]
-    print(f"ALERT: Critical findings: {len(critical_findings)}")
+    critical_validated_findings = [f for f in validation_dataset["findings"] if f["severity"].upper() == "CRITICAL"]
+    print(f"ALERT: Critical validated findings: {len(critical_validated_findings)}")
 
     # Phase 7: sign a small summary payload of this scan so its integrity
     # can be independently verified later (e.g. before trusting a report
@@ -660,8 +670,8 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
         "owner": owner,
         "name": name,
         "github_url": github_url,
-        "total_findings": len(all_findings),
-        "critical_findings": len(critical_findings),
+        "total_findings": len(validation_dataset["findings"]),
+        "critical_findings": len(critical_validated_findings),
         "generated_at": _now_iso(),
     }
     report_signature = sign_report(report_payload, SIGNING_PRIVATE_KEY)
@@ -703,18 +713,30 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                                 debug_log=debug_log,
                             )
 
-    try:
-        client.table("repos").update(
-            {
-                "status": "done",
-                "last_scanned_at": _now_iso(),
-                "finding_count": len(all_findings),
-                "ai_reasoning": ai_reasoning,
-                "report_signature": report_signature,
-            }
-        ).eq("id", req.repo_id).execute()
-    except Exception as exc:
-        print(f"WARNING: Failed to finalize repo scan status: {exc}")
+    repo_update_payload = {
+        "status": "done",
+        "last_scanned_at": _now_iso(),
+        "finding_count": len(all_findings),
+        "ai_reasoning": ai_reasoning,
+        "report_signature": report_signature,
+        "repo_profile": repo_profile,
+    }
+    while True:
+        try:
+            client.table("repos").update(repo_update_payload).eq("id", req.repo_id).execute()
+            break
+        except Exception as exc:
+            exc_str = str(exc)
+            if "column" in exc_str and "does not exist" in exc_str:
+                import re
+                match = re.search(r'column "([^"]+)" of relation', exc_str)
+                if match:
+                    missing_col = match.group(1)
+                    print(f"WARNING: '{missing_col}' column is missing from the database. Retrying repo update...")
+                    repo_update_payload.pop(missing_col, None)
+                    continue
+            print(f"WARNING: Failed to finalize repo scan status: {exc}")
+            break
 
     print(f"OK: Scan complete for {owner}/{name}")
 
@@ -767,7 +789,7 @@ async def delete_repo(repo_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/findings/{repo_id}", summary="List all findings for a scanned repo")
-async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
+async def get_findings(repo_id: str, request: Request) -> dict[str, Any]:
     client = _supabase_for_request(request)
     repo = _safe_repo_lookup(client, repo_id)
     response = (
@@ -795,7 +817,17 @@ async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
             )
     findings = await hydrate_missing_exposure_fields(client, str(repo.get("owner") or ""), str(repo.get("name") or ""), findings)
 
-    return findings
+    repo_profile = repo.get("repo_profile") or {
+        "languages": [],
+        "frameworks": [],
+        "infrastructure": [],
+        "security_features": [],
+        "apis": [],
+    }
+
+    from security.validation.validator import run_validation_pipeline
+    dataset = run_validation_pipeline(repo_id, findings, repo_profile)
+    return dataset
 
 
 @app.get(
@@ -803,44 +835,40 @@ async def get_findings(repo_id: str, request: Request) -> list[dict[str, Any]]:
     summary="Compute a repo's current security score (0-100) from its findings",
 )
 async def get_security_score(repo_id: str, request: Request) -> dict[str, Any]:
-    """
-    Reuses the exact scoring formula already implemented in
-    SemgrepService.calculate_security_score (100, minus 15/8/4/2 per
-    CRITICAL/HIGH/MEDIUM/LOW finding, floored at 0). The arithmetic is
-    duplicated here rather than reconstructing a full SemgrepAnalysisResult
-    object from stored findings, since that object expects the raw Semgrep
-    finding list rather than DB rows - duplicating three lines of arithmetic
-    is simpler than reverse-engineering one.
-    """
     client = _supabase_for_request(request)
-    _safe_repo_lookup(client, repo_id)  # 404s if the repo doesn't exist
-
+    repo = _safe_repo_lookup(client, repo_id)
     response = (
         client.table("findings")
-        .select("severity")
+        .select("*")
         .eq("repo_id", repo_id)
         .execute()
     )
     findings = getattr(response, "data", []) or []
+    
+    for finding in findings:
+        if finding.get("snippet_enc"):
+            finding["snippet"] = cipher.decrypt(finding["snippet_enc"])
+
+    repo_profile = repo.get("repo_profile") or {
+        "languages": [],
+        "frameworks": [],
+        "infrastructure": [],
+        "security_features": [],
+        "apis": [],
+    }
+
+    from security.validation.validator import run_validation_pipeline
+    dataset = run_validation_pipeline(repo_id, findings, repo_profile)
 
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-    for finding in findings:
-        severity = str(finding.get("severity") or "LOW").upper()
+    for f in dataset["findings"]:
+        severity = str(f.get("severity") or "LOW").upper()
         if severity in counts:
             counts[severity] += 1
 
-    score = max(
-        100
-        - counts["CRITICAL"] * 15
-        - counts["HIGH"] * 8
-        - counts["MEDIUM"] * 4
-        - counts["LOW"] * 2,
-        0,
-    )
-
     return {
         "repo_id": repo_id,
-        "security_score": score,
+        "security_score": dataset["security_score"],
         "breakdown": counts,
     }
 
