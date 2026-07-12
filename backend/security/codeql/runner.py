@@ -24,7 +24,10 @@ def run_codeql_db_create(repo_path: str, db_path: str, language: str) -> None:
     ]
     # For interpreted/scripting languages, bypass compiling (autobuilder)
     if language.lower() in ["python", "javascript", "ruby"]:
-        cmd.append("--build-mode=none")
+        if os.name == "nt":
+            cmd.extend(["--command", "cmd.exe /c type NUL"])
+        else:
+            cmd.extend(["--command", "true"])
         
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
