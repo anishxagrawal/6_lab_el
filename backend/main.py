@@ -484,7 +484,8 @@ async def scan_repo(req: ScanRequest, request: Request) -> dict[str, Any]:
                     hash_secret=hash_secret,
                     encrypt_snippet=cipher.encrypt,
                     calculate_exposure_score=calculate_exposure_score,
-                    hmac_secret_key=HMAC_SECRET_KEY
+                    hmac_secret_key=HMAC_SECRET_KEY,
+                    repo_path=cloned_repo_path
                 )
     except HTTPException:
         raise

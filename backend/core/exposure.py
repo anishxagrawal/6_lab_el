@@ -12,10 +12,36 @@ async def get_first_commit_date(
     owner: str,
     name: str,
     file_path: str,
+    repo_path: str | None = None,
 ) -> tuple[datetime | None, int]:
     """
     Get first commit date and exposure duration.
     """
+
+    if repo_path:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "log", "--follow", "--format=%cI", "--reverse", "--", file_path],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            dates = result.stdout.strip().splitlines()
+            if dates:
+                first_commit_date_str = dates[0]
+                # Convert ISO-8601 string to datetime. In Python 3.11+, fromisoformat handles 'Z' and offset formats natively.
+                # However, to be extra safe:
+                dt_str = first_commit_date_str.replace("Z", "+00:00")
+                first_commit_dt = datetime.fromisoformat(dt_str)
+                now = datetime.now(timezone.utc)
+                exposure_days = max(0, (now - first_commit_dt).days)
+                print(f"OK: Exposure calculated (local git) for {file_path} ({exposure_days} days)")
+                return first_commit_dt, exposure_days
+        except Exception as e:
+            print(f"WARNING: Local git lookup failed for {file_path}: {e}. Falling back to GitHub API.")
 
     try:
 

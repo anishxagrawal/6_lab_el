@@ -80,6 +80,9 @@ def should_skip_file(
 
     lowered = path.lower()
 
+    if any(lock in lowered for lock in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "composer.lock"]):
+        return True
+
     return any(
         lowered.endswith(ext)
         for ext in SKIP_EXT

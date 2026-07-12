@@ -85,6 +85,9 @@ def should_skip_file(
 
     lowered = path.lower()
 
+    if any(lock in lowered for lock in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "composer.lock"]):
+        return True
+
     return any(
         lowered.endswith(ext)
         for ext in SKIP_EXT
@@ -163,7 +166,8 @@ async def scan_file(
     hash_secret,
     encrypt_snippet,
     calculate_exposure_score,
-    hmac_secret_key
+    hmac_secret_key,
+    repo_path: str | None = None
 ) -> None:
 
     raw_url = (
@@ -187,6 +191,7 @@ async def scan_file(
                 owner,
                 name,
                 file_path,
+                repo_path=repo_path,
             )
         )
 
