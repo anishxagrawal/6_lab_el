@@ -245,11 +245,12 @@ async def scan_file(
             # so the same secret isn't reported twice under two detection
             # methods.
             # Skip entropy checks on test files, documentation, and config files to reduce false positive noise.
+            lowered_path = file_path.lower()
             is_test_or_doc = (
-                "test" in lowered 
-                or lowered.endswith(".md") 
-                or lowered.endswith(".txt")
-                or lowered.endswith(".json")
+                "test" in lowered_path 
+                or lowered_path.endswith(".md") 
+                or lowered_path.endswith(".txt")
+                or lowered_path.endswith(".json")
             )
             if not is_test_or_doc:
                 for hit in find_high_entropy_tokens(line):
