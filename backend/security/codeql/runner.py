@@ -22,6 +22,10 @@ def run_codeql_db_create(repo_path: str, db_path: str, language: str) -> None:
         f"--source-root={repo_path}",
         "--overwrite"
     ]
+    # For interpreted/scripting languages, bypass compiling (autobuilder)
+    if language.lower() in ["python", "javascript", "ruby"]:
+        cmd.append("--build-mode=none")
+        
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(f"CODEQL: Database created successfully: {res.stdout.strip()}")
