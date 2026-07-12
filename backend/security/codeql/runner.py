@@ -36,10 +36,25 @@ def run_codeql_db_create(repo_path: str, db_path: str, language: str) -> None:
         print(f"CODEQL ERROR: Failed to create database: {e.stderr}")
         raise CodeQLExecutionError(f"Database creation failed: {e.stderr}")
 
+def run_codeql_pack_download(pack: str) -> None:
+    """Download the CodeQL query pack if not already cached."""
+    if not check_codeql_available():
+        return
+    print(f"CODEQL: Pre-downloading/caching query pack: {pack}...")
+    cmd = ["codeql", "pack", "download", pack]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        print(f"CODEQL: Query pack downloaded successfully: {pack}")
+    except subprocess.CalledProcessError as e:
+        print(f"CODEQL WARNING: Failed to download query pack {pack}: {e.stderr}")
+
 def run_codeql_analyze(db_path: str, pack: str, sarif_path: str) -> None:
     """Analyze the database and output SARIF results."""
     if not check_codeql_available():
         raise CodeQLExecutionError("CodeQL CLI is not installed on the system.")
+
+    # Ensure the query pack is downloaded and cached first
+    run_codeql_pack_download(pack)
 
     cmd = [
         "codeql", "database", "analyze", db_path,
